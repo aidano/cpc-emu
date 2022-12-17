@@ -1,0 +1,72 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Cargo test",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib"
+                ]
+            },
+            "args": []
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Cargo test",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib"
+                ]
+            },
+            "args": []
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'cpc_emu'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=cpc_emu",
+                    "--package=cpc_emu"
+                ],
+                "filter": {
+                    "name": "cpc_emu",
+                    "kind": "bin"
+                }
+            },
+            "args": ["--dsk", "./dsk_files/cybernoi.dsk",
+                    "--rom", "./roms/CPC464.ROM"],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'cpc_emu'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=cpc_emu",
+                    "--package=cpc_emu"
+                ],
+                "filter": {
+                    "name": "cpc_emu",
+                    "kind": "bin"
+                }
+            },
+            "args": ["--dsk", "cybernoi.dsk"],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
