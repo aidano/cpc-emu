@@ -242,7 +242,7 @@ impl Instruction for InstJpNZ {
     
     // Jump to address provided in operands if zero flag is set
     fn execute(&self, components: &mut RuntimeComponents, operands: Operands) {
-        if !components.registers.get_zero() {
+        if components.registers.get_zero() ==  FlagValue::Unset {
             if let Operands::Two(high, low) = operands {
                 components.registers.pc.set(utils::combine_to_double_byte(high, low));
             }
@@ -266,7 +266,7 @@ impl Instruction for InstJpNZ {
 mod tests {
     use std::collections::HashMap;
 
-    use crate::{instruction_set::{Instruction, Operands, InstructionSet, basic::InstJpNZ, self}, memory::{Memory, Registers, AddressBus, DataBus}, runtime::{Runtime, RuntimeComponents}};
+    use crate::{instruction_set::{Instruction, Operands, InstructionSet, basic::InstJpNZ, self}, memory::{Memory, Registers, AddressBus, DataBus, FlagValue}, runtime::{Runtime, RuntimeComponents}};
 
     use super::{InstIncB, InstDecB, InstRlca};
 
@@ -353,7 +353,7 @@ mod tests {
         basic_instruction_set.insert(0x0, Box::new(InstJpNZ {}));
         let instruction_set = InstructionSet { basic_instructions: basic_instruction_set, extended_instructions: HashMap::new() };
         let mut components = runtime_components_with_instructions(instruction_set);
-        
+        components.registers.set_zero(FlagValue::Unset);
         InstJpNZ {}.execute(&mut components, Operands::Two(0xAA, 0xFF));
         assert!(components.registers.pc.get() == 0xAAFF);
     }

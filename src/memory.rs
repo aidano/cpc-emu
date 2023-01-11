@@ -77,7 +77,7 @@ pub struct Registers {
     pub pc: ProgramCounter
 }
 
-
+#[derive(PartialEq)]
 pub enum FlagValue {
     Set,
     Unset
@@ -125,14 +125,18 @@ impl Registers {
     }
 
     pub fn set_zero(&mut self, value: FlagValue) {
-        match value {
-            FlagValue::Set => self.f.value = self.f.value | 64,
-            FlagValue::Unset => self.f.value = self.f.value & (255 - 64)
+        self.f.value = match value {
+            FlagValue::Set => self.f.value | 64,
+            FlagValue::Unset => self.f.value & (255 - 64)
         }
     }
 
-    pub fn get_zero(&mut self) -> bool {
-        self.f.value | 64 == 64
+    pub fn get_zero(&mut self) -> FlagValue {
+        match  self.f.value & 64 {
+            64 => FlagValue::Set,
+            0 => FlagValue::Unset,
+            _ => panic!("Shouldn't happen")
+        }
     }
 
     pub fn set_add_subtract(&mut self, value: FlagValue) {
