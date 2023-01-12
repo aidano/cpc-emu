@@ -2,7 +2,7 @@ pub mod basic;
 pub mod extended;
 
 use crate::{memory::{Memory, Registers, DataBus, AddressBus}, runtime::{Runtime, RuntimeComponents}};
-use self::{basic::{InstNOP, InstLdBCnn}, extended::InstOutCC};
+use self::{basic::{InstNOP, InstLdBCnn, InstJp, InstPushBC}, extended::InstOutCC};
 
 use std::collections::HashMap;
 use log::{debug, error, log_enabled, info, Level};
@@ -31,6 +31,8 @@ impl InstructionSet {
         let mut basic_instruction_set: HashMap<u8, Box<dyn Instruction>> = HashMap::new();
         basic_instruction_set.insert(0x0, Box::new(InstNOP {}));
         basic_instruction_set.insert(0x1, Box::new(InstLdBCnn {}));
+        basic_instruction_set.insert(0xC3, Box::new(InstJp {}));
+        basic_instruction_set.insert(0xC5, Box::new(InstPushBC {}));
 
         let mut extended_instruction_set: HashMap<u8, Box<dyn Instruction>> = HashMap::new();
         extended_instruction_set.insert(0x49, Box::new(InstOutCC {}));

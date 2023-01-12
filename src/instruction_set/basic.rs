@@ -254,10 +254,46 @@ impl Instruction for InstJpNZ {
     }
 
     fn op_code(&self) -> u8 {
+        0xC2
+    }
+}
+
+pub struct InstJp {}
+impl Instruction for InstJp {
+    
+    // Jump to address provided in operands
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) {
+        if let Operands::Two(high, low) = operands {
+            components.registers.pc.set(utils::combine_to_double_byte(high, low));
+        }
+    }
+
+    fn operand_count(&self) -> u8 {
+        2
+    }
+
+    fn op_code(&self) -> u8 {
         0xC3
     }
 }
 
+pub struct InstPushBC {}
+impl Instruction for InstPushBC {
+
+    // Push contents of B and C onto stack.
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) {
+        let bc = combine_to_double_byte(components.registers.b.get(), components.registers.c.get());
+        components.registers.sp.push(&mut components.mem, bc);
+    }
+
+    fn operand_count(&self) -> u8 {
+        0
+    }
+
+    fn op_code(&self) -> u8 {
+        0xC5
+    }
+}
 
 
 // Tests
@@ -266,7 +302,7 @@ impl Instruction for InstJpNZ {
 mod tests {
     use std::collections::HashMap;
 
-    use crate::{instruction_set::{Instruction, Operands, InstructionSet, basic::InstJpNZ, self}, memory::{Memory, Registers, AddressBus, DataBus, FlagValue}, runtime::{Runtime, RuntimeComponents}};
+    use crate::{instruction_set::{Instruction, Operands, InstructionSet, basic::{InstJpNZ, InstPushBC}, self}, memory::{Memory, Registers, AddressBus, DataBus, FlagValue}, runtime::{Runtime, RuntimeComponents}, utils::split_double_byte};
 
     use super::{InstIncB, InstDecB, InstRlca};
 
@@ -357,6 +393,26 @@ mod tests {
         InstJpNZ {}.execute(&mut components, Operands::Two(0xAA, 0xFF));
         assert!(components.registers.pc.get() == 0xAAFF);
     }
+
+    #[test]
+    fn push_bc() {
+        let mut basic_instruction_set: HashMap<u8, Box<dyn Instruction>> = HashMap::new();
+        basic_instruction_set.insert(0x0, Box::new(InstPushBC {}));
+        let instruction_set = InstructionSet { basic_instructions: basic_instruction_set, extended_instructions: HashMap::new() };
+        let mut components = runtime_components_with_instructions(instruction_set);
+
+        components.registers.b.set(0xA);
+        components.registers.c.set(0xB);
+        InstPushBC {}.execute(&mut components, Operands::None);
+        
+        let value = components.registers.sp.pop(&components.mem);
+
+        let (high, low) = split_double_byte(value);
+        assert!(high == 0xA);
+        assert!(low == 0xB);
+    }
+
+
 
 }
 

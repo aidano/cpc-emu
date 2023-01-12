@@ -1,5 +1,7 @@
 use std::fmt;
 
+use crate::utils::{split_double_byte, combine_to_double_byte};
+
 pub struct Memory {
     pub locations: [u8; 0xFFFF]
 }
@@ -26,6 +28,28 @@ impl ProgramCounter {
 
     pub fn get(&self) -> u16 {
         self.value
+    }
+}
+
+pub struct StackPointer {
+    location: usize
+}
+
+impl StackPointer {
+    pub fn push(&mut self, memory: &mut Memory, value: u16) {
+        let (high, low) = split_double_byte(value);
+        self.location -= 1;
+        memory.locations[self.location] = high;
+        self.location -= 1;
+        memory.locations[self.location] = low;
+    }
+
+    pub fn pop(&mut self, memory: &Memory) -> u16 {
+        let low = memory.locations[self.location];
+        self.location += 1;
+        let high = memory.locations[self.location];
+        self.location += 1;
+        combine_to_double_byte(high, low)
     }
 }
 
@@ -74,7 +98,8 @@ pub struct Registers {
     pub h_: Register,
     pub l_: Register,
 
-    pub pc: ProgramCounter
+    pub pc: ProgramCounter,
+    pub sp: StackPointer
 }
 
 #[derive(PartialEq)]
@@ -102,7 +127,8 @@ impl Registers {
             e_: Register {name: "e'".to_string(), value: 0},
             h_: Register {name: "h'".to_string(), value: 0},
             l_: Register {name: "l'".to_string(), value: 0},
-            pc: ProgramCounter { value: 0 }
+            pc: ProgramCounter { value: 0 }, // PC normally begins at start of memory
+            sp: StackPointer { location: 0xFFFF } // SP normally begins at the end of memory and moves down.
         }
     }
 
@@ -147,5 +173,37 @@ impl Registers {
     }
 
 
+
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{instruction_set::{basic::InstPushBC, Instruction, InstructionSet}, runtime::RuntimeComponents};
+
+    use super::{Memory, Registers, AddressBus, DataBus, StackPointer};
+
+    fn runtime_components() -> RuntimeComponents {
+        RuntimeComponents { mem: Memory::default(), registers: Registers::default(), address_bus: AddressBus { value: 0 }, data_bus: DataBus { value: 0 } }
+    }
+    
+    #[test]
+    fn test_stack_pointer() {
+        let mut sp = StackPointer { location: 0x100 };
+        let mut mem = Memory::default();
+
+        sp.push(&mut mem, 0xABEF);
+        assert!(sp.location == 0x100 - 0x2);
+
+        sp.push(&mut mem, 0xCD89);
+        assert!(sp.location == 0x100 - 0x4);
+
+        let val = sp.pop(&mut mem);
+        assert!(val == 0xCD89);
+        assert!(sp.location == 0x100 - 0x2);
+
+        let val = sp.pop(&mut mem);
+        assert!(val == 0xABEF);
+        assert!(sp.location == 0x100);
+    }
 
 }
