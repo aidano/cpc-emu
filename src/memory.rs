@@ -29,6 +29,14 @@ impl ProgramCounter {
     pub fn get(&self) -> u16 {
         self.value
     }
+
+    pub(crate) fn inc(&mut self) {
+        self.value = self.value + 1;
+    }
+
+    pub(crate) fn dec(&mut self) {
+        self.value = self.value - 1;
+    }
 }
 
 pub struct StackPointer {
@@ -76,8 +84,17 @@ pub struct AddressBus {
     pub value: u16 // TODO: simple impl for now.
 }
 
-pub struct DataBus {
-    pub value: u8 // TODO: simple impl for now.
+// TODO: This struct might actually represent both the address and the data bus, in which case the above struct can go away.
+pub struct DataBus {}
+impl DataBus {
+    
+    pub fn write(&self, port: u16, value: u8) {
+        // stub for now
+    }
+
+    pub fn read(&self, port: u16) -> u8 {
+        0xEF // dummy value for now
+    }
 }
 
 pub struct Registers {
@@ -99,7 +116,8 @@ pub struct Registers {
     pub l_: Register,
 
     pub pc: ProgramCounter,
-    pub sp: StackPointer
+    pub sp: StackPointer,
+    pub maskable_interrupt_enabled: bool
 }
 
 #[derive(PartialEq)]
@@ -128,7 +146,8 @@ impl Registers {
             h_: Register {name: "h'".to_string(), value: 0},
             l_: Register {name: "l'".to_string(), value: 0},
             pc: ProgramCounter { value: 0 }, // PC normally begins at start of memory
-            sp: StackPointer { location: 0xFFFF } // SP normally begins at the end of memory and moves down.
+            sp: StackPointer { location: 0xFFFF }, // SP normally begins at the end of memory and moves down.
+            maskable_interrupt_enabled: true
         }
     }
 
@@ -172,18 +191,31 @@ impl Registers {
         }
     }
 
+    pub fn set_sign(&mut self, value: FlagValue) {
+        self.f.value = match value {
+            FlagValue::Set => self.f.value | 128,
+            FlagValue::Unset => self.f.value & (255 - 128)
+        }
+    }
 
+    pub fn get_sign(&self) -> FlagValue {
+        match  self.f.value & 128 {
+            128 => FlagValue::Set,
+            0 => FlagValue::Unset,
+            _ => panic!("Shouldn't happen")
+        }
+    }
 
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{instruction_set::{basic::InstPushBC, Instruction, InstructionSet}, runtime::RuntimeComponents};
+    use crate::{instruction_set::{Instruction, InstructionSet}, runtime::RuntimeComponents};
 
     use super::{Memory, Registers, AddressBus, DataBus, StackPointer};
 
     fn runtime_components() -> RuntimeComponents {
-        RuntimeComponents { mem: Memory::default(), registers: Registers::default(), address_bus: AddressBus { value: 0 }, data_bus: DataBus { value: 0 } }
+        RuntimeComponents { mem: Memory::default(), registers: Registers::default(), address_bus: AddressBus { value: 0 }, data_bus: DataBus { } }
     }
     
     #[test]

@@ -26,7 +26,6 @@ struct Arguments {
 
 fn main() -> io::Result<()> {
     env_logger::init();
-    
     let matches = App::new("CPC Emu")
         .version("0.1.0")
         .author("aidano")
@@ -56,7 +55,7 @@ fn main() -> io::Result<()> {
     match (reader.read_to_end(&mut buffer)) {
         Ok(bytes) => {
             debug!("File: read {} bytes\n", bytes);
-            let _ = dbg!(Dsk::init_from_bytes(buffer.as_slice()));
+            let _ = Dsk::init_from_bytes(buffer.as_slice());
         },
         Err(code) =>  {
             error!("Error reading dsk: {:?}", code);

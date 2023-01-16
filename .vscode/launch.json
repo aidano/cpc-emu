@@ -4,6 +4,7 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
+
         {
             "type": "lldb",
             "request": "launch",
@@ -47,7 +48,10 @@
             },
             "args": ["--dsk", "./dsk_files/cybernoi.dsk",
                     "--rom", "./roms/CPC464.ROM"],
-            "cwd": "${workspaceFolder}"
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "RUST_LOG": "debug"
+            }
         },
         {
             "type": "lldb",
