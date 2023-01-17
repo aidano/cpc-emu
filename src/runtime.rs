@@ -1,4 +1,6 @@
 use std::ops::Add;
+use std::thread::{Thread, self};
+use std::time::{self, SystemTime};
 
 ///////////////////////
 //
@@ -134,8 +136,15 @@ impl Runtime {
             let mem = &mut self.components.mem;
             let registers = &mut self.components.registers;
             
-            debug!("{:0>4X}\t{: <8}\t{}", pc, inst_machine_code, inst_assembly);
-            instruction.execute(&mut self.components, operands);
+            let start_time = SystemTime::now();
+            let cycles = instruction.execute(&mut self.components, operands);
+
+            let mut elapsed_micros = start_time.elapsed().unwrap().as_micros();
+            while elapsed_micros < (cycles as u128 * 250u128) {
+                thread::sleep(time::Duration::from_micros(2)); // todo: need to figure out appropriate granularity
+                elapsed_micros = start_time.elapsed().unwrap().as_micros();
+            }
+            debug!("{:0>4X}\t{: <8}\t{: <12}\t({}/{})", pc, inst_machine_code, inst_assembly, cycles, elapsed_micros);
         } 
     }
 }

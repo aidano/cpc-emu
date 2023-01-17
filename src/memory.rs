@@ -17,6 +17,11 @@ pub struct Register {
     value: u8
 }
 
+pub struct Accumulator {
+    name: String,
+    value: i8
+}
+
 pub struct ProgramCounter {
     value: u16
 }
@@ -153,12 +158,26 @@ impl Registers {
 
     //
     // Bit	    7	6	5	4	3	2	1	0
-    // Position	S	Z	x	H	y	P/V	N	C
+    // Position	S	Z	/	H	/	P/V	N	C
     //
     pub fn set_carry(&mut self, value: FlagValue) {
         match value {
             FlagValue::Set => self.f.value = self.f.value | 1,
             FlagValue::Unset => self.f.value = self.f.value & (255 - 1)
+        }
+    }
+
+    pub fn set_add_subtract(&mut self, value: FlagValue) {
+        match value {
+            FlagValue::Set => self.f.value = self.f.value | 2,
+            FlagValue::Unset => self.f.value = self.f.value & (255 - 2)
+        }
+    }
+
+    pub fn set_parity_overflow(&mut self, value: FlagValue) {
+        match value {
+            FlagValue::Set => self.f.value = self.f.value | 4,
+            FlagValue::Unset => self.f.value = self.f.value & (255 - 4)
         }
     }
 
@@ -176,25 +195,50 @@ impl Registers {
         }
     }
 
-    pub fn get_zero(&mut self) -> FlagValue {
-        match  self.f.value & 64 {
-            64 => FlagValue::Set,
+    pub fn set_sign(&mut self, value: FlagValue) {
+        self.f.value = match value {
+            FlagValue::Set => self.f.value | 128,
+            FlagValue::Unset => self.f.value & (255 - 128)
+        }
+    }
+
+    pub fn get_carry(&mut self) -> FlagValue {
+        match  self.f.value & 1 {
+            1 => FlagValue::Set,
             0 => FlagValue::Unset,
             _ => panic!("Shouldn't happen")
         }
     }
 
-    pub fn set_add_subtract(&mut self, value: FlagValue) {
-        match value {
-            FlagValue::Set => self.f.value = self.f.value | 2,
-            FlagValue::Unset => self.f.value = self.f.value & (255 - 2)
+    pub fn get_add_subtract(&mut self) -> FlagValue {
+        match  self.f.value & 2 {
+            2 => FlagValue::Set,
+            0 => FlagValue::Unset,
+            _ => panic!("Shouldn't happen")
         }
     }
 
-    pub fn set_sign(&mut self, value: FlagValue) {
-        self.f.value = match value {
-            FlagValue::Set => self.f.value | 128,
-            FlagValue::Unset => self.f.value & (255 - 128)
+    pub fn get_parity_overflow(&mut self) -> FlagValue {
+        match  self.f.value & 4 {
+            4 => FlagValue::Set,
+            0 => FlagValue::Unset,
+            _ => panic!("Shouldn't happen")
+        }
+    }
+
+    pub fn get_half_carry(&mut self) -> FlagValue {
+        match  self.f.value & 16 {
+            16 => FlagValue::Set,
+            0 => FlagValue::Unset,
+            _ => panic!("Shouldn't happen")
+        }
+    }
+
+    pub fn get_zero(&mut self) -> FlagValue {
+        match  self.f.value & 64 {
+            64 => FlagValue::Set,
+            0 => FlagValue::Unset,
+            _ => panic!("Shouldn't happen")
         }
     }
 

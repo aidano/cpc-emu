@@ -517,7 +517,45 @@ impl Instruction for _0xC9 {
     }
 }
 
+// #E0 to EF
+pub struct _0xE6 {}
+impl Instruction for _0xE6 {
+    
+    // Bitwise AND a with operand. Set flags accordingly.
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+        if let Operands::One(val) = operands {
+            components.registers.a.set(components.registers.a.get() & val);
+            // todo: set flags
+            components.registers.set_carry(FlagValue::Unset);
+            components.registers.set_add_subtract(FlagValue::Unset);
+            components.registers.set_half_carry(FlagValue::Set);
 
+            let overflow = if components.registers.a.get() & 128 > 1 {
+                FlagValue::Set
+            } else {
+                FlagValue::Unset
+            };
+            components.registers.set_parity_overflow(overflow);
+        }
+        7
+    }
+
+    fn operand_count(&self) -> u8 {
+        1
+    }
+
+    fn op_code(&self) -> u8 {
+        0xE6
+    }
+
+    fn machine_code(&self) -> &str {
+        "E6 *1"
+    }
+
+    fn assembly(&self) -> &str {
+        "AND *1"
+    }
+}
 
 // #F0 to FF
 
@@ -609,7 +647,7 @@ mod tests {
 
     use crate::{instruction_set::{Instruction, Operands, InstructionSet, self, basic::{_0xC9, _0xC5, _0xC2, _0xF5}}, memory::{Memory, Registers, AddressBus, DataBus, FlagValue}, runtime::{Runtime, RuntimeComponents}, utils::split_double_byte};
 
-    use super::{_0x04, _0x05, _0x07};
+    use super::{_0x04, _0x05, _0x07, _0xE6};
 
     fn runtime_components() -> RuntimeComponents {
         RuntimeComponents { mem: Memory::default(), registers: Registers::default(), address_bus: AddressBus { value: 0 }, data_bus: DataBus { } }
@@ -711,6 +749,31 @@ mod tests {
         let (high, low) = split_double_byte(value);
         assert!(high == 0xEF);
         assert!(low == 0x8C);
+    }
+
+    #[test]
+    fn and_n() {
+        let mut components = runtime_components();
+
+        components.registers.a.set(120);
+        components.registers.f.set(0);
+        _0xE6 {}.execute(&mut components, Operands::One(105));
+        assert!(components.registers.get_carry() == FlagValue::Unset);
+        assert!(components.registers.get_add_subtract() == FlagValue::Unset);
+        assert!(components.registers.get_parity_overflow() == FlagValue::Unset);
+        assert!(components.registers.get_half_carry() == FlagValue::Set);
+        assert!(components.registers.get_zero() == FlagValue::Unset);
+        assert!(components.registers.get_sign() == FlagValue::Unset);
+
+        components.registers.a.set(128);
+        components.registers.f.set(0);
+        _0xE6 {}.execute(&mut components, Operands::One(135));
+        assert!(components.registers.get_carry() == FlagValue::Unset);
+        assert!(components.registers.get_add_subtract() == FlagValue::Unset);
+        assert!(components.registers.get_parity_overflow() == FlagValue::Set);
+        assert!(components.registers.get_half_carry() == FlagValue::Set);
+        assert!(components.registers.get_zero() == FlagValue::Unset);
+        assert!(components.registers.get_sign() == FlagValue::Unset);
     }
 
 

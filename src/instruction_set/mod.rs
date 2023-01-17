@@ -6,7 +6,7 @@ use crate::{memory::{Memory, Registers, DataBus, AddressBus}, runtime::{Runtime,
 use std::collections::HashMap;
 use log::{debug, error, log_enabled, info, Level};
 
-use self::{extended::{_0xED49, _0xED78}, basic::{_0x00, _0xC3, _0x01, _0xC5, _0xC9, _0x4C, _0xC0, _0xF3, _0x06, _0x78, _0xF5}};
+use self::{extended::{_0xED49, _0xED78}, basic::{_0x00, _0xC3, _0x01, _0xC5, _0xC9, _0x4C, _0xC0, _0xF3, _0x06, _0x78, _0xF5, _0xE6}};
 
 #[derive(Debug)]
 pub enum Operands {
@@ -43,7 +43,7 @@ impl InstructionSet {
         basic_instruction_set.insert(0x06, Box::new(_0x06 {}));
         basic_instruction_set.insert(0x78, Box::new(_0x78 {}));
         basic_instruction_set.insert(0xF5, Box::new(_0xF5 {}));
-
+        basic_instruction_set.insert(0xE6, Box::new(_0xE6 {}));
 
         let mut extended_instruction_set: HashMap<u8, Box<dyn Instruction>> = HashMap::new();
         extended_instruction_set.insert(0x49, Box::new(_0xED49 {}));
