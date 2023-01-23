@@ -7,7 +7,7 @@ use std::time::{self, SystemTime};
 // Runtime components - memory, registers, instruction set 
 //
 ///////////////////////
-use crate::memory::{Memory, Registers, AddressBus, DataBus};
+use crate::memory::{Memory, Registers, AddressBus, DataBus, DefaultRegister};
 use crate::instruction_set::{InstructionSet, Instruction, Operands};
 
 use log::{debug, error, log_enabled, info, Level};
@@ -22,7 +22,7 @@ pub struct RuntimeComponents {
 impl RuntimeComponents {
     pub fn default() -> RuntimeComponents {
         let mem = Memory::default();
-        let registers = Registers::default();
+        let registers: Registers = Registers::default();
         let address_bus = AddressBus { value: 0 };
         let data_bus = DataBus { };
         RuntimeComponents { mem, registers, address_bus, data_bus }

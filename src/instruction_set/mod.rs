@@ -6,7 +6,7 @@ use crate::{memory::{Memory, Registers, DataBus, AddressBus}, runtime::{Runtime,
 use std::collections::HashMap;
 use log::{debug, error, log_enabled, info, Level};
 
-use self::{extended::{_0xED49, _0xED78}, basic::{_0x00, _0xC3, _0x01, _0xC5, _0xC9, _0x4C, _0xC0, _0xF3, _0x06, _0x78, _0xF5, _0xE6}};
+use self::{extended::{_0xED49, _0xED78, _0xED79}, basic::{_0x00, _0xC3, _0x01, _0xC5, _0xC9, _0x4C, _0xC0, _0xF3, _0x06, _0x78, _0xF5, _0xE6, _0x21, _0x20, _0x2B, _0x7E, _0x04, _0x05, _0x0D, _0xF2, _0x18}};
 
 #[derive(Debug)]
 pub enum Operands {
@@ -19,7 +19,6 @@ pub enum Operands {
 pub trait Instruction {
     fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8;
     fn operand_count(&self) -> u8;
-    fn op_code(&self) -> u8;
     fn machine_code(&self) -> &str;
     fn assembly(&self) -> &str;
 }
@@ -44,11 +43,21 @@ impl InstructionSet {
         basic_instruction_set.insert(0x78, Box::new(_0x78 {}));
         basic_instruction_set.insert(0xF5, Box::new(_0xF5 {}));
         basic_instruction_set.insert(0xE6, Box::new(_0xE6 {}));
+        basic_instruction_set.insert(0x21, Box::new(_0x21 {}));
+        basic_instruction_set.insert(0x20, Box::new(_0x20 {}));
+        basic_instruction_set.insert(0x2B, Box::new(_0x2B {}));
+        basic_instruction_set.insert(0x7E, Box::new(_0x7E {}));
+        basic_instruction_set.insert(0x04, Box::new(_0x04 {}));
+        basic_instruction_set.insert(0x05, Box::new(_0x05 {}));
+        basic_instruction_set.insert(0x0D, Box::new(_0x0D {}));
+        basic_instruction_set.insert(0xF2, Box::new(_0xF2 {}));
+        basic_instruction_set.insert(0x18, Box::new(_0x18 {}));
 
         let mut extended_instruction_set: HashMap<u8, Box<dyn Instruction>> = HashMap::new();
         extended_instruction_set.insert(0x49, Box::new(_0xED49 {}));
         extended_instruction_set.insert(0x78, Box::new(_0xED78 {}));
-        
+        extended_instruction_set.insert(0x79, Box::new(_0xED79 {}));
+
         // and so on...
         
         InstructionSet {basic_instructions: basic_instruction_set, extended_instructions: extended_instruction_set }

@@ -8,8 +8,26 @@ use std::str::FromStr;
 
 use log::{debug, error};
 
-use crate::{memory::{Memory, Registers, FlagValue, AddressBus, DataBus}, utils::{combine_to_double_byte, split_double_byte, self}, runtime::{RuntimeComponents}};
+use crate::{memory::{Memory, Registers, FlagValue, AddressBus, DataBus, RegisterOperations, Register, DefaultRegister}, utils::{combine_to_double_byte, split_double_byte, self}, runtime::{RuntimeComponents}};
 use super::{Instruction, Operands};
+
+
+#[macro_export]
+macro_rules! inst_metadata {
+    ( $op_count:expr,$op_code:expr,$assem:expr) => {
+        fn operand_count(&self) -> u8 {
+            $op_count
+        }
+    
+        fn machine_code(&self) -> &str {
+            $op_code
+        }
+    
+        fn assembly(&self) -> &str {
+            $assem
+        }
+    };
+}
 
 // #00 to 0F
 #[derive(Debug, Clone)]
@@ -19,22 +37,11 @@ impl Instruction for _0x00 {
         4
     }
 
-    fn operand_count(&self) -> u8 {
-        0
-    }
-
-    fn op_code(&self) -> u8 {
-        0x00
-    }
-
-    fn machine_code(&self) -> &str {
-        "00"
-    }
-
-    fn assembly(&self) -> &str {
-        "nop"
-    }
+    inst_metadata!(0, "00", "nop");
 }
+
+
+
 
 
 #[derive(Debug, Copy, Clone)]
@@ -43,162 +50,69 @@ impl Instruction for _0x01 {
     fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
         match operands {
             Operands::Two(first, second) => {
-                components.registers.b.set(first);
-                components.registers.c.set(second);
+                RegisterOperations::ld_register_pair_with_value((&mut components.registers.b, &mut components.registers.c), combine_to_double_byte(first, second));
             }
             _ => error!("Wrong operands used for ld_bc"),
         }
         10
     }
 
-    fn operand_count(&self) -> u8 {
-        2
-    }
-
-    fn op_code(&self) -> u8 {
-        0x01
-    }
-
-    fn assembly(&self) -> &str {
-        "LD BC,*2*1"
-    }
-
-    fn machine_code(&self) -> &str {
-        "01 *1 *2"
-    }
+    inst_metadata!(2, "01 *1 *2", "LD BC,*2*1");
 }
 
 pub struct _0x02 {}
 impl Instruction for _0x02 {
     fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
-        let reg = &mut components.registers;
-        debug!("ld_(bc)_a {:?}", operands);
-        let addr = combine_to_double_byte(reg.b.get(), reg.c.get());
-        reg.a.set(components.mem.locations[addr as usize]);
+        RegisterOperations::ld_register_from_pointer(&mut components.mem, &mut components.registers.a, (&components.registers.b, &components.registers.c));
         7
     }
 
-    fn operand_count(&self) -> u8 {
-        0
-    }
-
-    fn op_code(&self) -> u8 {
-        0x02
-    }
-
-    fn machine_code(&self) -> &str {
-        "02"
-    }
-
-    fn assembly(&self) -> &str {
-        "LD (BC),A"
-    }
+    inst_metadata!(0, "02", "LD (BC),A");
 }
 
 pub struct _0x03 {}
 impl Instruction for _0x03 {
     fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
-        let reg = &mut components.registers;
-        let mut value = combine_to_double_byte(reg.b.get(), reg.c.get());
-        value += 1;
-        let split = split_double_byte(value);
-        reg.b.set(split.0);
-        reg.c.set(split.1);
+        RegisterOperations::inc_register_pair((&mut components.registers.b, &mut components.registers.c), &mut components.registers.f);
         6
     }
 
-    fn operand_count(&self) -> u8 {
-        0
-    }
-
-    fn op_code(&self) -> u8 {
-        0x03
-    }
-
-    fn machine_code(&self) -> &str {
-        "03"
-    }
-
-    fn assembly(&self) -> &str {
-        "INC BC"
-    }
+    inst_metadata!(0, "03", "INC BC");
 }
 
 pub struct _0x04 {}
 impl Instruction for _0x04 {
     fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
-        components.registers.b.set(components.registers.b.get() + 1);
+        RegisterOperations::inc(&mut components.registers.b, &mut components.registers.f);
         4
     }
 
-    fn operand_count(&self) -> u8 {
-        0
-    }
-
-    fn op_code(&self) -> u8 {
-        0x04
-    }
-
-    fn machine_code(&self) -> &str {
-        "04"
-    }
-
-    fn assembly(&self) -> &str {
-        "INC B"
-    }
+    inst_metadata!(0, "04", "INC B");
 }
 
 pub struct _0x05 {}
 impl Instruction for _0x05 {
     fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
-        components.registers.b.set(components.registers.b.get() -1);
+        RegisterOperations::dec(&mut components.registers.b, &mut components.registers.f);
         4
     }
 
-    fn operand_count(&self) -> u8 {
-        0
-    }
-
-    fn op_code(&self) -> u8 {
-        0x05
-    }
-
-    fn machine_code(&self) -> &str {
-        "05"
-    }
-
-    fn assembly(&self) -> &str {
-       "DEC B"
-    }
+    inst_metadata!(0, "05", "DEC B");
 }
 
 pub struct _0x06 {}
 impl Instruction for _0x06 {
     fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
         match operands {
-            Operands::One(operand) => {
-                components.registers.b.set(operand);
+            Operands::One(value) => {
+                RegisterOperations::ld_register_with_value(&mut components.registers.b, value)
             }
             _ => error!("Wrong operands used for ld_b"),
         }
         7
     }
 
-    fn operand_count(&self) -> u8 {
-        1
-    }
-
-    fn op_code(&self) -> u8 {
-        0x06
-    }
-
-    fn machine_code(&self) -> &str {
-        "06 *1"
-    }
-
-    fn assembly(&self) -> &str {
-        "LD B,*1"
-    }
+    inst_metadata!(1, "06 *1", "LD B,*1");
 }
 
 
@@ -211,28 +125,14 @@ impl Instruction for _0x07 {
         let bit_7 = (value & 0x80) >> 7; // left-most bit (i.e. 128)
         components.registers.a.set((value << 1) | bit_7);
         match bit_7 {
-            0 => components.registers.set_carry(FlagValue::Unset),
-            1 => components.registers.set_carry(FlagValue::Set),
+            0 => components.registers.f.set_carry(FlagValue::Unset),
+            1 => components.registers.f.set_carry(FlagValue::Set),
             _ => error!("bit 7 incorrectly set for InstRlca")
         }
         4
     }
 
-    fn operand_count(&self) -> u8 {
-        0
-    }
-
-    fn op_code(&self) -> u8 {
-        0x07
-    }
-
-    fn machine_code(&self) -> &str {
-        "07"
-    }
-
-    fn assembly(&self) -> &str {
-       "RCLA"
-    }
+    inst_metadata!(0, "07", "RCLA");
 }
 
 pub struct _0x08 {}
@@ -245,73 +145,120 @@ impl Instruction for _0x08 {
         registers.a.set(registers.a_.get());
         registers.f.set(registers.f_.get());
         registers.a_.set(a_val);
-        registers.f.set(f_val);
+        registers.f_.set(f_val);
         4
     }
 
-    fn operand_count(&self) -> u8 {
-        0
-    }
-
-    fn op_code(&self) -> u8 {
-        0x08
-    }
-
-    fn machine_code(&self) -> &str {
-        "08"
-    }
-
-    fn assembly(&self) -> &str {
-        "EX AF,AF"
-    }
+    inst_metadata!(0, "08", "EX AF,AF'");
 }
 
 pub struct _0x09 {}
 impl Instruction for _0x09 {
     // The value of BC is added to HL.
     fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
-        let mut registers = &mut components.registers;
-        let hl = combine_to_double_byte(registers.h.get(), registers.l.get());
-        let bc = combine_to_double_byte(registers.b.get(), registers.c.get());
-        let total_as_u32 = (hl as u32 + bc as u32);
-        let carry = if (hl as u32 + bc as u32) > u16::MAX as u32 {
-             FlagValue::Set 
-            } else {
-                 FlagValue::Unset 
-            };
-        let half_carry = if (hl & 8 == 1) && (bc & 8 == 1) {
-                FlagValue::Set
-            } else {
-                FlagValue::Unset
-            };
-        let total_as_u16 = (total_as_u32 & 0xFFFF) as u16;
-        let hl = split_double_byte(total_as_u16);
-        registers.h.set(hl.0);
-        registers.l.set(hl.1);
-        registers.set_carry(carry);
-        registers.set_half_carry(half_carry);
-        registers.set_add_subtract(FlagValue::Set);
+        let registers = &mut components.registers;
+        RegisterOperations::add_register_pairs((&mut registers.h, &mut registers.l), (&mut registers.b, &mut registers.c), &mut registers.f);
         11
     }
 
-    fn operand_count(&self) -> u8 {
-        0
+    inst_metadata!(0, "09", "ADD HL,BC");
+}
+
+#[derive(Debug, Clone)]
+pub struct _0x0B {}
+impl Instruction for _0x0B {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+        let mut registers = &mut components.registers;
+        RegisterOperations::dec_register_pair((&mut registers.b, &mut registers.c), &mut registers.f);
+        6
     }
 
-    fn op_code(&self) -> u8 {
-        0x09
+    inst_metadata!(0, "0B", "DEC BC");
+}
+
+#[derive(Debug, Clone)]
+pub struct _0x0D {}
+impl Instruction for _0x0D {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+        let mut registers = &mut components.registers;
+        RegisterOperations::dec(&mut registers.c, &mut registers.f);
+        4
     }
 
-    fn machine_code(&self) -> &str {
-        "09"
-    }
-
-    fn assembly(&self) -> &str {
-        "ADD HL,BC"
-    }
+    inst_metadata!(0, "0D", "DEC C");
 }
 
 
+// #10 to 1F
+
+
+pub struct _0x18 {}
+impl Instruction for _0x18 {
+
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+        // The signed value d is added to PC. The jump is measured from the start of the instruction opcode.
+        match operands {
+            Operands::One(op1) => {
+                components.registers.pc.set(components.registers.pc.get() + (op1 as u16 - 2));
+            }
+            _ => error!("Wrong operands used for {}", self.assembly()),
+        }
+        12
+    }
+
+    inst_metadata!(1, "18 *1", "JR *1");
+}
+
+
+
+
+// #20 to 2F
+
+pub struct _0x20 {}
+impl Instruction for _0x20 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+        // If the zero flag is unset, the signed value d is added to PC. The jump is measured from the start of the instruction opcode.
+        match operands {
+            Operands::One(op1) => {
+                if components.registers.f.get_zero() == FlagValue::Set {
+                    components.registers.pc.set(components.registers.pc.get() + (op1 as u16 - 2));
+                    return 12;
+                }
+            }
+            _ => error!("Wrong operands used for {}", self.assembly()),
+        }
+        7
+    }
+
+    inst_metadata!(1, "20 *1", "JR NZ,*1");
+}
+
+pub struct _0x21 {}
+impl Instruction for _0x21 {
+    // load nn into hl
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+        match operands {
+            Operands::Two(op1, op2) => {
+                RegisterOperations::ld_register_pair_with_value((&mut components.registers.h, &mut components.registers.l), combine_to_double_byte(op2, op1));
+            }
+            _ => error!("Wrong operands used for {}", self.assembly()),
+        }
+        10
+    }
+
+    inst_metadata!(2, "21 *1 *2", "LD HL,*2*1");
+}
+
+pub struct _0x2B {}
+impl Instruction for _0x2B {
+    // dec hl
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+        RegisterOperations::dec_register_pair((&mut components.registers.h, &mut components.registers.l), &mut components.registers.f);
+        6
+    }
+
+    inst_metadata!(0, "2B", "DEC HL");
+}
 
 
 
@@ -320,25 +267,11 @@ pub struct _0x4C {}
 impl Instruction for _0x4C {
     fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
         // Contents of h are loaded into c
-        components.registers.c.set(components.registers.h.get());
+        RegisterOperations::ld_register_from_register(&components.registers.h, &mut components.registers.c);
         4
     }
 
-    fn operand_count(&self) -> u8 {
-        0
-    }
-
-    fn op_code(&self) -> u8 {
-        0x4C
-    }
-
-    fn machine_code(&self) -> &str {
-        "4C"
-    }
-
-    fn assembly(&self) -> &str {
-        "LD C,H"
-    }
+    inst_metadata!(0, "4C", "LD C,H");
 }
 
 
@@ -347,30 +280,23 @@ impl Instruction for _0x4C {
 pub struct _0x78 {}
 impl Instruction for _0x78 {
     fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
-        // Contents of h are loaded into c
-        components.registers.a.set(components.registers.b.get());
+        RegisterOperations::ld_register_from_register(&components.registers.b, &mut components.registers.a);
         4
     }
 
-    fn operand_count(&self) -> u8 {
-        0
-    }
-
-    fn op_code(&self) -> u8 {
-        0x78
-    }
-
-    fn machine_code(&self) -> &str {
-        "78"
-    }
-
-    fn assembly(&self) -> &str {
-        "LD A,B"
-    }
+    inst_metadata!(0, "78", "LD A,B");
 }
 
 
+pub struct _0x7E {}
+impl Instruction for _0x7E {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+        RegisterOperations::ld_register_from_pointer(&components.mem, &mut components.registers.a, (&components.registers.h, &components.registers.l));
+        7
+    }
 
+    inst_metadata!(0, "7E", "LD A,(HL)");
+}
 
 
 
@@ -383,28 +309,14 @@ impl Instruction for _0xC0 {
 
     fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
         // if zero flag is not set, pop sp value onto pc
-        if components.registers.get_zero() == FlagValue::Unset {
+        if components.registers.f.get_zero() == FlagValue::Unset {
             components.registers.pc.set(components.registers.sp.pop(&components.mem));
             return 11;
         }
         5
     }
 
-    fn operand_count(&self) -> u8 {
-        0
-    }
-
-    fn op_code(&self) -> u8 {
-        0xC0
-    }
-
-    fn machine_code(&self) -> &str {
-        "C0"
-    }
-
-    fn assembly(&self) -> &str {
-        "RET NZ"
-    }
+    inst_metadata!(0, "C0", "RET NZ");
 }
 
 pub struct _0xC2 {}
@@ -412,7 +324,7 @@ impl Instruction for _0xC2 {
     
     // Jump to address provided in operands if zero flag is set
     fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
-        if components.registers.get_zero() ==  FlagValue::Unset {
+        if components.registers.f.get_zero() ==  FlagValue::Unset {
             if let Operands::Two(low, high) = operands {
                 components.registers.pc.set(utils::combine_to_double_byte(high, low));
             }
@@ -420,21 +332,7 @@ impl Instruction for _0xC2 {
         10
     }
 
-    fn operand_count(&self) -> u8 {
-        2
-    }
-
-    fn op_code(&self) -> u8 {
-        0xC2
-    }
-
-    fn machine_code(&self) -> &str {
-        "C2 *1 *2"
-    }
-
-    fn assembly(&self) -> &str {
-        "JP NZ,*2*1"
-    }
+    inst_metadata!(2, "C2 *1 *2", "JP NZ,*2*1");
 }
 
 pub struct _0xC3 {}
@@ -448,21 +346,7 @@ impl Instruction for _0xC3 {
         10
     }
 
-    fn operand_count(&self) -> u8 {
-        2
-    }
-
-    fn op_code(&self) -> u8 {
-        0xC3
-    }
-
-    fn machine_code(&self) -> &str {
-       "C3 *1 *2"
-    }
-
-    fn assembly(&self) -> &str {
-        "JP *2*1"
-    }
+    inst_metadata!(2, "C3 *1 *2", "JP *2*1");
 }
 
 pub struct _0xC5 {}
@@ -470,26 +354,11 @@ impl Instruction for _0xC5 {
 
     // Push contents of B and C onto stack.
     fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
-        let bc = combine_to_double_byte(components.registers.b.get(), components.registers.c.get());
-        components.registers.sp.push(&mut components.mem, bc);
+        RegisterOperations::push_register_pair((&components.registers.b, &components.registers.c), &mut components.registers.sp, &mut components.mem);
         11
     }
 
-    fn operand_count(&self) -> u8 {
-        0
-    }
-
-    fn op_code(&self) -> u8 {
-        0xC5
-    }
-
-    fn machine_code(&self) -> &str {
-        "C5"
-    }
-
-    fn assembly(&self) -> &str {
-        "PUSH BC"
-    }
+    inst_metadata!(0, "C5", "PUSH BC");
 }
 
 pub struct _0xC9 {}
@@ -500,21 +369,7 @@ impl Instruction for _0xC9 {
         10
     }
 
-    fn operand_count(&self) -> u8 {
-        0
-    }
-
-    fn op_code(&self) -> u8 {
-        0xC9
-    }
-
-    fn machine_code(&self) -> &str {
-        "C9"
-    }
-
-    fn assembly(&self) -> &str {
-        "RET"
-    }
+    inst_metadata!(0, "C9", "RET");
 }
 
 // #E0 to EF
@@ -524,37 +379,12 @@ impl Instruction for _0xE6 {
     // Bitwise AND a with operand. Set flags accordingly.
     fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
         if let Operands::One(val) = operands {
-            components.registers.a.set(components.registers.a.get() & val);
-            // todo: set flags
-            components.registers.set_carry(FlagValue::Unset);
-            components.registers.set_add_subtract(FlagValue::Unset);
-            components.registers.set_half_carry(FlagValue::Set);
-
-            let overflow = if components.registers.a.get() & 128 > 1 {
-                FlagValue::Set
-            } else {
-                FlagValue::Unset
-            };
-            components.registers.set_parity_overflow(overflow);
+            components.registers.a.and(val, &mut components.registers.f)
         }
         7
     }
 
-    fn operand_count(&self) -> u8 {
-        1
-    }
-
-    fn op_code(&self) -> u8 {
-        0xE6
-    }
-
-    fn machine_code(&self) -> &str {
-        "E6 *1"
-    }
-
-    fn assembly(&self) -> &str {
-        "AND *1"
-    }
+    inst_metadata!(1, "E6 *1", "AND *1");
 }
 
 // #F0 to FF
@@ -563,28 +393,30 @@ pub struct _0xF0 {}
 impl Instruction for _0xF0 {
     
     fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
-        if components.registers.get_sign() == FlagValue::Set {
+        if components.registers.f.get_sign() == FlagValue::Set {
             components.registers.pc.set(components.registers.sp.pop(&components.mem));
             return 11;
         }
         5
     }
 
-    fn operand_count(&self) -> u8 {
-        0
+    inst_metadata!(0, "F0", "RET P");
+}
+
+pub struct _0xF2 {}
+impl Instruction for _0xF2 {
+    
+    // Jump to address provided in operands if sign flag is set
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+        if components.registers.f.get_sign() ==  FlagValue::Set {
+            if let Operands::Two(low, high) = operands {
+                components.registers.pc.set(utils::combine_to_double_byte(high, low));
+            }
+        }
+        10
     }
 
-    fn op_code(&self) -> u8 {
-        0xF0
-    }
-
-    fn machine_code(&self) -> &str {
-        "F0"
-    }
-
-    fn assembly(&self) -> &str {
-        "RET P"
-    }
+    inst_metadata!(2, "F2 *1 *2", "JP P,*2*1");
 }
 
 pub struct _0xF3 {}
@@ -595,47 +427,18 @@ impl Instruction for _0xF3 {
         4
     }
 
-    fn operand_count(&self) -> u8 {
-        0
-    }
-
-    fn op_code(&self) -> u8 {
-        0xF3
-    }
-
-    fn machine_code(&self) -> &str {
-        "F3"
-    }
-
-    fn assembly(&self) -> &str {
-        "DI"
-    }
+    inst_metadata!(0, "F3", "DI");
 }
 
 pub struct _0xF5 {}
 impl Instruction for _0xF5 {
     
     fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
-        let value = combine_to_double_byte(components.registers.a.get(), components.registers.f.get());
-        components.registers.sp.push(&mut components.mem, value);
+        RegisterOperations::push_register_pair((&components.registers.a, &components.registers.f), &mut components.registers.sp, &mut components.mem);
         11
     }
 
-    fn operand_count(&self) -> u8 {
-        0
-    }
-
-    fn op_code(&self) -> u8 {
-        0xF5
-    }
-
-    fn machine_code(&self) -> &str {
-        "F5"
-    }
-
-    fn assembly(&self) -> &str {
-        "PUSH AF"
-    }
+    inst_metadata!(0, "F5", "PUSH AF");
 }
 
 
@@ -645,9 +448,9 @@ impl Instruction for _0xF5 {
 mod tests {
     use std::collections::HashMap;
 
-    use crate::{instruction_set::{Instruction, Operands, InstructionSet, self, basic::{_0xC9, _0xC5, _0xC2, _0xF5}}, memory::{Memory, Registers, AddressBus, DataBus, FlagValue}, runtime::{Runtime, RuntimeComponents}, utils::split_double_byte};
+    use crate::{instruction_set::{Instruction, Operands, InstructionSet, self, basic::{_0xC9, _0xC5, _0xC2, _0xF5}}, memory::{Memory, Registers, AddressBus, DataBus, FlagValue, Register}, runtime::{Runtime, RuntimeComponents}, utils::split_double_byte};
 
-    use super::{_0x04, _0x05, _0x07, _0xE6};
+    use super::{_0x04, _0x05, _0x07, _0xE6, _0x0B};
 
     fn runtime_components() -> RuntimeComponents {
         RuntimeComponents { mem: Memory::default(), registers: Registers::default(), address_bus: AddressBus { value: 0 }, data_bus: DataBus { } }
@@ -707,7 +510,7 @@ mod tests {
     fn jpnz() {
         let mut components = runtime_components();
 
-        components.registers.set_zero(FlagValue::Unset);
+        components.registers.f.set_zero(FlagValue::Unset);
         _0xC2 {}.execute(&mut components, Operands::Two(0xAA, 0xFF));
         assert!(components.registers.pc.get() == 0xFFAA);
     }
@@ -758,22 +561,35 @@ mod tests {
         components.registers.a.set(120);
         components.registers.f.set(0);
         _0xE6 {}.execute(&mut components, Operands::One(105));
-        assert!(components.registers.get_carry() == FlagValue::Unset);
-        assert!(components.registers.get_add_subtract() == FlagValue::Unset);
-        assert!(components.registers.get_parity_overflow() == FlagValue::Unset);
-        assert!(components.registers.get_half_carry() == FlagValue::Set);
-        assert!(components.registers.get_zero() == FlagValue::Unset);
-        assert!(components.registers.get_sign() == FlagValue::Unset);
+        assert!(components.registers.f.get_carry() == FlagValue::Unset);
+        assert!(components.registers.f.get_add_subtract() == FlagValue::Unset);
+        assert!(components.registers.f.get_parity_overflow() == FlagValue::Unset);
+        assert!(components.registers.f.get_half_carry() == FlagValue::Set);
+        assert!(components.registers.f.get_zero() == FlagValue::Unset);
+        assert!(components.registers.f.get_sign() == FlagValue::Unset);
 
         components.registers.a.set(128);
         components.registers.f.set(0);
         _0xE6 {}.execute(&mut components, Operands::One(135));
-        assert!(components.registers.get_carry() == FlagValue::Unset);
-        assert!(components.registers.get_add_subtract() == FlagValue::Unset);
-        assert!(components.registers.get_parity_overflow() == FlagValue::Set);
-        assert!(components.registers.get_half_carry() == FlagValue::Set);
-        assert!(components.registers.get_zero() == FlagValue::Unset);
-        assert!(components.registers.get_sign() == FlagValue::Unset);
+        assert!(components.registers.f.get_carry() == FlagValue::Unset);
+        assert!(components.registers.f.get_add_subtract() == FlagValue::Unset);
+        assert!(components.registers.f.get_parity_overflow() == FlagValue::Set);
+        assert!(components.registers.f.get_half_carry() == FlagValue::Set);
+        assert!(components.registers.f.get_zero() == FlagValue::Unset);
+        assert!(components.registers.f.get_sign() == FlagValue::Unset);
+    }
+
+
+    #[test]
+    fn dec_bc() {
+        let mut components = runtime_components();
+        components.registers.b.set(0xFF);
+        components.registers.c.set(0x3F);
+
+        let cycles = _0x0B {}.execute(&mut components, Operands::None);
+        assert!(cycles == 6);
+        assert!(components.registers.b.get() == 0xFF);
+        assert!(components.registers.c.get() == 0x3E);
     }
 
 
