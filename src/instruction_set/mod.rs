@@ -6,7 +6,7 @@ use crate::{memory::{Memory, Registers, DataBus, AddressBus}, runtime::{Runtime,
 use std::collections::HashMap;
 use log::{debug, error, log_enabled, info, Level};
 
-use self::{extended::{_0xED49, _0xED78, _0xED79}, basic::{_0x00, _0xC3, _0x01, _0xC5, _0xC9, _0x4C, _0xC0, _0xF3, _0x06, _0x78, _0xF5, _0xE6, _0x21, _0x20, _0x2B, _0x7E, _0x04, _0x05, _0x0D, _0xF2, _0x18}};
+use self::{extended::{_0xED49, _0xED78, _0xED79, _0xED56, _0xED46, _0xEDB0}, basic::{_0x00, _0xC3, _0x01, _0xC5, _0xC9, _0x4C, _0xC0, _0xF3, _0x06, _0x78, _0xF5, _0xE6, _0x21, _0x20, _0x2B, _0x7E, _0x04, _0x05, _0x0D, _0xF2, _0x18, _0x11, _0xD9, _0x36}};
 
 #[derive(Debug)]
 pub enum Operands {
@@ -17,7 +17,7 @@ pub enum Operands {
 
 
 pub trait Instruction {
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8;
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16;
     fn operand_count(&self) -> u8;
     fn machine_code(&self) -> &str;
     fn assembly(&self) -> &str;
@@ -52,11 +52,17 @@ impl InstructionSet {
         basic_instruction_set.insert(0x0D, Box::new(_0x0D {}));
         basic_instruction_set.insert(0xF2, Box::new(_0xF2 {}));
         basic_instruction_set.insert(0x18, Box::new(_0x18 {}));
+        basic_instruction_set.insert(0x11, Box::new(_0x11 {}));
+        basic_instruction_set.insert(0xD9, Box::new(_0xD9 {}));
+        basic_instruction_set.insert(0x36, Box::new(_0x36 {}));
 
         let mut extended_instruction_set: HashMap<u8, Box<dyn Instruction>> = HashMap::new();
         extended_instruction_set.insert(0x49, Box::new(_0xED49 {}));
         extended_instruction_set.insert(0x78, Box::new(_0xED78 {}));
         extended_instruction_set.insert(0x79, Box::new(_0xED79 {}));
+        extended_instruction_set.insert(0x56, Box::new(_0xED56 {}));
+        extended_instruction_set.insert(0x46, Box::new(_0xED46 {}));
+        extended_instruction_set.insert(0xB0, Box::new(_0xEDB0 {}));
 
         // and so on...
         

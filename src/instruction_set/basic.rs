@@ -33,7 +33,7 @@ macro_rules! inst_metadata {
 #[derive(Debug, Clone)]
 pub struct _0x00 {}
 impl Instruction for _0x00 {
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         4
     }
 
@@ -47,10 +47,10 @@ impl Instruction for _0x00 {
 #[derive(Debug, Copy, Clone)]
 pub struct _0x01 {}
 impl Instruction for _0x01 {
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         match operands {
             Operands::Two(first, second) => {
-                RegisterOperations::ld_register_pair_with_value((&mut components.registers.b, &mut components.registers.c), combine_to_double_byte(first, second));
+                RegisterOperations::ld_register_pair_with_value((&mut components.registers.b, &mut components.registers.c), combine_to_double_byte(second, first));
             }
             _ => error!("Wrong operands used for ld_bc"),
         }
@@ -62,8 +62,8 @@ impl Instruction for _0x01 {
 
 pub struct _0x02 {}
 impl Instruction for _0x02 {
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
-        RegisterOperations::ld_register_from_pointer(&mut components.mem, &mut components.registers.a, (&components.registers.b, &components.registers.c));
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
+        RegisterOperations::ld_register_from_addr(&mut components.mem, &mut components.registers.a, (&components.registers.b, &components.registers.c));
         7
     }
 
@@ -72,7 +72,7 @@ impl Instruction for _0x02 {
 
 pub struct _0x03 {}
 impl Instruction for _0x03 {
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         RegisterOperations::inc_register_pair((&mut components.registers.b, &mut components.registers.c), &mut components.registers.f);
         6
     }
@@ -82,7 +82,7 @@ impl Instruction for _0x03 {
 
 pub struct _0x04 {}
 impl Instruction for _0x04 {
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         RegisterOperations::inc(&mut components.registers.b, &mut components.registers.f);
         4
     }
@@ -92,7 +92,7 @@ impl Instruction for _0x04 {
 
 pub struct _0x05 {}
 impl Instruction for _0x05 {
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         RegisterOperations::dec(&mut components.registers.b, &mut components.registers.f);
         4
     }
@@ -102,7 +102,7 @@ impl Instruction for _0x05 {
 
 pub struct _0x06 {}
 impl Instruction for _0x06 {
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         match operands {
             Operands::One(value) => {
                 RegisterOperations::ld_register_with_value(&mut components.registers.b, value)
@@ -120,7 +120,7 @@ pub struct _0x07 {}
 impl Instruction for _0x07 {
     // The contents of A are rotated left one bit position. 
     // The contents of bit 7 are copied to the carry flag and bit 0.
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         let value = components.registers.a.get();
         let bit_7 = (value & 0x80) >> 7; // left-most bit (i.e. 128)
         components.registers.a.set((value << 1) | bit_7);
@@ -138,7 +138,7 @@ impl Instruction for _0x07 {
 pub struct _0x08 {}
 impl Instruction for _0x08 {
     // Exchanges the 16-bit contents of AF and AF'.
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         let mut registers = &mut components.registers;
         let a_val = registers.a.get();
         let f_val = registers.f.get();
@@ -155,7 +155,7 @@ impl Instruction for _0x08 {
 pub struct _0x09 {}
 impl Instruction for _0x09 {
     // The value of BC is added to HL.
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         let registers = &mut components.registers;
         RegisterOperations::add_register_pairs((&mut registers.h, &mut registers.l), (&mut registers.b, &mut registers.c), &mut registers.f);
         11
@@ -167,7 +167,7 @@ impl Instruction for _0x09 {
 #[derive(Debug, Clone)]
 pub struct _0x0B {}
 impl Instruction for _0x0B {
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         let mut registers = &mut components.registers;
         RegisterOperations::dec_register_pair((&mut registers.b, &mut registers.c), &mut registers.f);
         6
@@ -179,7 +179,7 @@ impl Instruction for _0x0B {
 #[derive(Debug, Clone)]
 pub struct _0x0D {}
 impl Instruction for _0x0D {
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         let mut registers = &mut components.registers;
         RegisterOperations::dec(&mut registers.c, &mut registers.f);
         4
@@ -192,14 +192,32 @@ impl Instruction for _0x0D {
 // #10 to 1F
 
 
+pub struct _0x11 {}
+impl Instruction for _0x11 {
+
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
+        // The signed value d is added to PC. The jump is measured from the start of the instruction opcode.
+        match operands {
+            Operands::Two(low, high) => {
+                RegisterOperations::ld_register_pair_with_value((&mut components.registers.d, &mut components.registers.e), combine_to_double_byte(high, low));
+            }
+            _ => error!("Wrong operands used for {}", self.assembly()),
+        }
+        10
+    }
+
+    inst_metadata!(2, "11 *1 *2", "LD DE,*2*1");
+}
+
+
 pub struct _0x18 {}
 impl Instruction for _0x18 {
 
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         // The signed value d is added to PC. The jump is measured from the start of the instruction opcode.
         match operands {
             Operands::One(op1) => {
-                components.registers.pc.set(components.registers.pc.get() + (op1 as u16 - 2));
+                components.registers.pc.set(components.registers.pc.get() + (op1 as u16));
             }
             _ => error!("Wrong operands used for {}", self.assembly()),
         }
@@ -216,12 +234,12 @@ impl Instruction for _0x18 {
 
 pub struct _0x20 {}
 impl Instruction for _0x20 {
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         // If the zero flag is unset, the signed value d is added to PC. The jump is measured from the start of the instruction opcode.
         match operands {
             Operands::One(op1) => {
                 if components.registers.f.get_zero() == FlagValue::Set {
-                    components.registers.pc.set(components.registers.pc.get() + (op1 as u16 - 2));
+                    components.registers.pc.set(components.registers.pc.get() + (op1 as u16));
                     return 12;
                 }
             }
@@ -236,7 +254,7 @@ impl Instruction for _0x20 {
 pub struct _0x21 {}
 impl Instruction for _0x21 {
     // load nn into hl
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         match operands {
             Operands::Two(op1, op2) => {
                 RegisterOperations::ld_register_pair_with_value((&mut components.registers.h, &mut components.registers.l), combine_to_double_byte(op2, op1));
@@ -252,7 +270,7 @@ impl Instruction for _0x21 {
 pub struct _0x2B {}
 impl Instruction for _0x2B {
     // dec hl
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         RegisterOperations::dec_register_pair((&mut components.registers.h, &mut components.registers.l), &mut components.registers.f);
         6
     }
@@ -262,10 +280,29 @@ impl Instruction for _0x2B {
 
 
 
+// #30 to 3F
+pub struct _0x36 {}
+impl Instruction for _0x36 {
+    // load nn into hl
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
+        match operands {
+            Operands::One(value) => {
+                RegisterOperations::ld_addr_with_value(&mut components.mem,(&mut components.registers.h, &mut components.registers.l), value);
+            }
+            _ => error!("Wrong operands used for {}", self.assembly()),
+        }
+        10
+    }
+
+    inst_metadata!(1, "36 *1", "LD (HL),*1");
+}
+
+
+
 // #40 to 4F
 pub struct _0x4C {}
 impl Instruction for _0x4C {
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         // Contents of h are loaded into c
         RegisterOperations::ld_register_from_register(&components.registers.h, &mut components.registers.c);
         4
@@ -279,7 +316,7 @@ impl Instruction for _0x4C {
 // #70 to fF
 pub struct _0x78 {}
 impl Instruction for _0x78 {
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         RegisterOperations::ld_register_from_register(&components.registers.b, &mut components.registers.a);
         4
     }
@@ -290,8 +327,8 @@ impl Instruction for _0x78 {
 
 pub struct _0x7E {}
 impl Instruction for _0x7E {
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
-        RegisterOperations::ld_register_from_pointer(&components.mem, &mut components.registers.a, (&components.registers.h, &components.registers.l));
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
+        RegisterOperations::ld_register_from_addr(&components.mem, &mut components.registers.a, (&components.registers.h, &components.registers.l));
         7
     }
 
@@ -307,7 +344,7 @@ impl Instruction for _0x7E {
 pub struct _0xC0 {}
 impl Instruction for _0xC0 {
 
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         // if zero flag is not set, pop sp value onto pc
         if components.registers.f.get_zero() == FlagValue::Unset {
             components.registers.pc.set(components.registers.sp.pop(&components.mem));
@@ -323,7 +360,7 @@ pub struct _0xC2 {}
 impl Instruction for _0xC2 {
     
     // Jump to address provided in operands if zero flag is set
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         if components.registers.f.get_zero() ==  FlagValue::Unset {
             if let Operands::Two(low, high) = operands {
                 components.registers.pc.set(utils::combine_to_double_byte(high, low));
@@ -339,7 +376,7 @@ pub struct _0xC3 {}
 impl Instruction for _0xC3 {
     
     // Jump to address provided in operands
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8{
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16{
         if let Operands::Two(low, high) = operands {
             components.registers.pc.set(utils::combine_to_double_byte(high, low));
         }
@@ -353,7 +390,7 @@ pub struct _0xC5 {}
 impl Instruction for _0xC5 {
 
     // Push contents of B and C onto stack.
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         RegisterOperations::push_register_pair((&components.registers.b, &components.registers.c), &mut components.registers.sp, &mut components.mem);
         11
     }
@@ -363,7 +400,7 @@ impl Instruction for _0xC5 {
 
 pub struct _0xC9 {}
 impl Instruction for _0xC9 {
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         let addr = components.registers.sp.pop(&&components.mem);
         components.registers.pc.set(addr);
         10
@@ -372,12 +409,42 @@ impl Instruction for _0xC9 {
     inst_metadata!(0, "C9", "RET");
 }
 
+// #D0 to DF
+pub struct _0xD9 {}
+impl Instruction for _0xD9 {
+    // Bitwise AND a with operand. Set flags accordingly.
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
+        let b = components.registers.b.get();
+        let c = components.registers.c.get();
+        let d = components.registers.d.get();
+        let e = components.registers.e.get();
+        let h = components.registers.h.get();
+        let l = components.registers.l.get();
+        components.registers.b.set(components.registers.b_.get());
+        components.registers.c.set(components.registers.c_.get());
+        components.registers.d.set(components.registers.d_.get());
+        components.registers.e.set(components.registers.e_.get());
+        components.registers.h.set(components.registers.h_.get());
+        components.registers.l.set(components.registers.l_.get());
+        components.registers.b_.set(b);
+        components.registers.c_.set(c);
+        components.registers.d_.set(d);
+        components.registers.e_.set(e);
+        components.registers.h_.set(h);
+        components.registers.l_.set(l);
+        4
+    }
+
+    inst_metadata!(0, "D9", "EXX");
+}
+
+
 // #E0 to EF
 pub struct _0xE6 {}
 impl Instruction for _0xE6 {
     
     // Bitwise AND a with operand. Set flags accordingly.
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         if let Operands::One(val) = operands {
             components.registers.a.and(val, &mut components.registers.f)
         }
@@ -392,7 +459,7 @@ impl Instruction for _0xE6 {
 pub struct _0xF0 {}
 impl Instruction for _0xF0 {
     
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         if components.registers.f.get_sign() == FlagValue::Set {
             components.registers.pc.set(components.registers.sp.pop(&components.mem));
             return 11;
@@ -407,7 +474,7 @@ pub struct _0xF2 {}
 impl Instruction for _0xF2 {
     
     // Jump to address provided in operands if sign flag is set
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         if components.registers.f.get_sign() ==  FlagValue::Set {
             if let Operands::Two(low, high) = operands {
                 components.registers.pc.set(utils::combine_to_double_byte(high, low));
@@ -422,7 +489,7 @@ impl Instruction for _0xF2 {
 pub struct _0xF3 {}
 impl Instruction for _0xF3 {
     
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         components.registers.maskable_interrupt_enabled = false;
         4
     }
@@ -433,7 +500,7 @@ impl Instruction for _0xF3 {
 pub struct _0xF5 {}
 impl Instruction for _0xF5 {
     
-    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u8 {
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         RegisterOperations::push_register_pair((&components.registers.a, &components.registers.f), &mut components.registers.sp, &mut components.mem);
         11
     }

@@ -139,12 +139,13 @@ impl Runtime {
             let start_time = SystemTime::now();
             let cycles = instruction.execute(&mut self.components, operands);
 
-            let mut elapsed_micros = start_time.elapsed().unwrap().as_micros();
-            while elapsed_micros < (cycles as u128 * 250u128) {
-                thread::sleep(time::Duration::from_micros(2)); // todo: need to figure out appropriate granularity
-                elapsed_micros = start_time.elapsed().unwrap().as_micros();
+            let mut elapsed = start_time.elapsed().unwrap().as_nanos();
+            let target_elapsed = cycles as u128 * 250u128; // 1 cycle is 250 nanoseconds on a 4Mhz chip.
+            while elapsed < target_elapsed { 
+                thread::sleep(time::Duration::from_nanos(2));
+                elapsed = start_time.elapsed().unwrap().as_nanos();
             }
-            debug!("{:0>4X}\t{: <8}\t{: <12}\t({}/{})", pc, inst_machine_code, inst_assembly, cycles, elapsed_micros);
+            debug!("{:0>4X}\t{: <8}\t{: <12}\t({}/{})", pc, inst_machine_code, inst_assembly, cycles, elapsed);
         } 
     }
 }

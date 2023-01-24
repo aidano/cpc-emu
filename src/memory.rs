@@ -308,7 +308,8 @@ pub struct Registers {
 
     pub pc: ProgramCounter,
     pub sp: StackPointer,
-    pub maskable_interrupt_enabled: bool
+    pub maskable_interrupt_enabled: bool,
+    pub interrupt_mode: u8
 }
 
 pub struct RegisterOperations {}
@@ -353,7 +354,7 @@ impl RegisterOperations {
         reg.set(value);
     }
 
-    pub fn ld_register_from_pointer<R : Register, P: Register>(mem: &Memory, reg: &mut R, reg_pair: (&P, &P)) {
+    pub fn ld_register_from_addr<R : Register, P: Register>(mem: &Memory, reg: &mut R, reg_pair: (&P, &P)) {
         let addr = combine_to_double_byte(reg_pair.0.get(), reg_pair.1.get());
         reg.set(mem.locations[addr as usize]);
     }
@@ -363,6 +364,12 @@ impl RegisterOperations {
         reg_pair.0.set(high);
         reg_pair.1.set(low);
     }
+
+    pub fn ld_addr_with_value<R : Register>(mem: &mut Memory, reg_pair: (&R, &R), value: u8) {
+        let addr = combine_to_double_byte(reg_pair.0.get(), reg_pair.1.get());
+        mem.locations[addr as usize] = value;
+    }
+
 
     pub fn ld_register_from_register<R: Register, T: Register>(source: &R, target: &mut T) {
         target.set(source.get());
@@ -436,7 +443,8 @@ impl Registers {
             l_: DefaultRegister {name: "l'".to_string(), value: 0},
             pc: ProgramCounter { value: 0 }, // PC normally begins at start of memory
             sp: StackPointer { location: 0xFFFF }, // SP normally begins at the end of memory and moves down.
-            maskable_interrupt_enabled: true
+            maskable_interrupt_enabled: true,
+            interrupt_mode: 0
         }
     }
 }
