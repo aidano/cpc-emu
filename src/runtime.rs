@@ -142,10 +142,10 @@ impl Runtime {
             let mut elapsed = start_time.elapsed().unwrap().as_nanos();
             let target_elapsed = cycles as u128 * 250u128; // 1 cycle is 250 nanoseconds on a 4Mhz chip.
             while elapsed < target_elapsed { 
-                thread::sleep(time::Duration::from_nanos(2));
+                thread::sleep(time::Duration::from_nanos(1));
                 elapsed = start_time.elapsed().unwrap().as_nanos();
             }
-            debug!("{:0>4X}\t{: <8}\t{: <12}\t({}/{})", pc, inst_machine_code, inst_assembly, cycles, elapsed);
+            debug!("{:0>4X}\t{: <8}\t{: <12}\t({}/{}µs)", pc, inst_machine_code, inst_assembly, cycles, elapsed/1000);
         } 
     }
 }

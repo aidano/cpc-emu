@@ -15,16 +15,28 @@ pub fn split_double_byte(value: u16) -> (u8, u8) {
     (high, low)
 }
 
+pub fn signed(value: u8) -> i8 {
+   value as i8
+}
+
 
 #[cfg(test)]
 mod tests {
-    use super::split_double_byte;
+    use super::{split_double_byte, signed};
     
     #[test]
     fn test_split_double_byte() {
         let (high, low) = split_double_byte(0xABEF);
         assert!(high == 0xAB);
         assert!(low == 0xEF);
+    }
+
+    #[test]
+    fn test_signed() {
+        let signed_3 = signed(3);
+        assert!(signed_3 == 3);
+        let signed_minus_5 = signed(0xFB);
+        assert!(signed_minus_5 == -5);
     }
 
 }

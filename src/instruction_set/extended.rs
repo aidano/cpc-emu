@@ -1,6 +1,8 @@
 // # Extended Instructions #ED xx xx
 
-use crate::{memory::{Memory, Registers, AddressBus, DataBus, Register}, utils::{self, combine_to_double_byte, split_double_byte}, runtime::{Runtime, RuntimeComponents}, inst_metadata};
+use log::error;
+
+use crate::{memory::{Memory, Registers, AddressBus, DataBus, Register, RegisterOperations}, utils::{self, combine_to_double_byte, split_double_byte}, runtime::{Runtime, RuntimeComponents}, inst_metadata};
 use super::{Instruction, Operands};
 
 pub struct _0xED46 {}
@@ -11,7 +13,7 @@ impl Instruction for _0xED46 {
         10
     }
 
-    inst_metadata!(0, "46", "IM 0");
+    inst_metadata!(0, "ED 46", "IM 0");
 }
 
 pub struct _0xED49 {}
@@ -36,8 +38,25 @@ impl Instruction for _0xED56 {
         10
     }
 
-    inst_metadata!(0, "56", "IM 1");
+    inst_metadata!(0, "ED 56", "IM 1");
 }
+
+pub struct _0xED5B {}
+impl Instruction for _0xED5B {
+    // Loads the value pointed to by nn into DE.
+    fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
+        match operands {
+            Operands::Two(op1, op2) => {
+                RegisterOperations::ld_register_pair_from_addr(&components.mem, (&mut components.registers.d, &mut components.registers.e), combine_to_double_byte(op2, op1));
+            }
+            _ => error!("Wrong operands used for {}", self.assembly()),
+        }
+        20
+    }
+
+    inst_metadata!(2, "ED 5B *1 *2", "LD DE,(*2*1)");
+}
+
 
 pub struct _0xED78 {}
 impl Instruction for _0xED78 {
@@ -50,7 +69,7 @@ impl Instruction for _0xED78 {
         12
     }
 
-    inst_metadata!(0, "78", "IN A,(C)");
+    inst_metadata!(0, "ED 78", "IN A,(C)");
 }
 
 pub struct _0xED79 {}
@@ -65,7 +84,7 @@ impl Instruction for _0xED79 {
         12
     }
 
-    inst_metadata!(0, "79", "OUT (C),A");
+    inst_metadata!(0, "ED 79", "OUT (C),A");
 }
 
 
@@ -94,7 +113,7 @@ impl Instruction for _0xEDB0 {
         16 + (repeats * 21)
     }
 
-    inst_metadata!(0, "B0", "LDIR");
+    inst_metadata!(0, "BED 0", "LDIR");
 }
 
 

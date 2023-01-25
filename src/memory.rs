@@ -81,6 +81,18 @@ impl Accumulator {
         flags.set_parity_overflow( if reg.get() & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
     }
 
+    pub fn xor<R : Register>(&mut self, reg: &R, flags: &mut FlagsRegister) {
+        self.set(self.get() ^ reg.get());
+        flags.set_parity_overflow( if reg.get() & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
+        flags.set_zero(if self.value == 0 { FlagValue::Set } else { FlagValue::Unset });
+        flags.set_sign(if self.value & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
+    }
+
+    pub fn xor_a(&mut self, flags: &mut FlagsRegister) {
+        self.set(self.get() ^ self.get());
+        flags.set_parity_overflow( if self.get() & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
+    }
+
     // Add the passed register to a
     pub fn add_a<R : Register>(&mut self, reg: &R, flags: &mut FlagsRegister) {
         let carry = flags.get_carry();
@@ -267,6 +279,10 @@ impl StackPointer {
         self.location += 1;
         combine_to_double_byte(high, low)
     }
+
+    pub fn set(&mut self, value: usize) {
+        self.location = value;
+    }
 }
 
 
@@ -320,6 +336,8 @@ impl RegisterOperations {
         reg.set(reg.get() - 1);
         flags.set_parity_overflow( if reg.get() & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
         flags.set_add_subtract(FlagValue::Set);
+        flags.set_zero(if reg.get() == 0 { FlagValue::Set } else { FlagValue::Unset});
+        flags.set_sign(if (reg.get() as i8) < 0 { FlagValue::Set } else { FlagValue::Unset });
     }
     
     pub fn dec_register_pair<R: Register>(reg_pair: (&mut R, &mut R), flags: &mut FlagsRegister) {
@@ -344,9 +362,9 @@ impl RegisterOperations {
         let (high, low) = split_double_byte(value);
         reg_pair.0.set(high);
         reg_pair.1.set(low);
-        flags.set_add_subtract(FlagValue::Unset);
-        flags.set_parity_overflow( if reg_pair.0.get() & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
-        flags.set_half_carry( if half_carry { FlagValue::Set } else { FlagValue::Unset });
+        // flags.set_add_subtract(FlagValue::Unset);
+        // flags.set_parity_overflow( if reg_pair.0.get() & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
+        // flags.set_half_carry( if half_carry { FlagValue::Set } else { FlagValue::Unset });
     }
 
 
@@ -354,7 +372,15 @@ impl RegisterOperations {
         reg.set(value);
     }
 
-    pub fn ld_register_from_addr<R : Register, P: Register>(mem: &Memory, reg: &mut R, reg_pair: (&P, &P)) {
+    pub fn ld_register_from_register<R: Register, T: Register>(source: &R, target: &mut T) {
+        target.set(source.get());
+    }
+
+    pub fn ld_register_from_addr<R: Register>(mem: &Memory, reg: &mut R, value: u16) {
+        reg.set(mem.locations[value as usize]);
+    }
+
+    pub fn ld_register_from_addr_with_register_pair<R : Register, P: Register>(mem: &Memory, reg: &mut R, reg_pair: (&P, &P)) {
         let addr = combine_to_double_byte(reg_pair.0.get(), reg_pair.1.get());
         reg.set(mem.locations[addr as usize]);
     }
@@ -365,19 +391,38 @@ impl RegisterOperations {
         reg_pair.1.set(low);
     }
 
-    pub fn ld_addr_with_value<R : Register>(mem: &mut Memory, reg_pair: (&R, &R), value: u8) {
+    pub fn ld_register_pair_from_addr<R: Register>(mem: &Memory, reg_pair: (&mut R, &mut R), addr: u16) {
+        let value = mem.locations[addr as usize];
+        RegisterOperations::ld_register_pair_with_value(reg_pair, combine_to_double_byte(0x0, value));
+    }
+
+
+    // pub fn ld_register_pair_from_addr_with_register_pair<R: Register>(reg_pair_target: (&mut R, &mut R), reg_pair_addr: (&mut R, &mut R)) {
+
+    // }
+
+
+    pub fn ld_addr_from_reg_pair_with_value<R : Register>(mem: &mut Memory, reg_pair: (&R, &R), value: u8) {
         let addr = combine_to_double_byte(reg_pair.0.get(), reg_pair.1.get());
         mem.locations[addr as usize] = value;
     }
 
-
-    pub fn ld_register_from_register<R: Register, T: Register>(source: &R, target: &mut T) {
-        target.set(source.get());
+    pub fn ld_addr_from_value_with_register<R : Register>(mem: &mut Memory, value: u16, reg: &R) {
+        mem.locations[value as usize] = reg.get();
     }
 
-    pub fn add_register_pairs<P: Register>(reg_pair1: (&mut P, &mut P),reg_pair2: (&P, &P), flags: &mut FlagsRegister) {
-        let val1 = combine_to_double_byte(reg_pair1.0.get(), reg_pair1.1.get());
-        let val2 = combine_to_double_byte(reg_pair2.0.get(), reg_pair2.1.get());
+
+    pub fn ld_addr_from_reg_pair_with_register<R : Register, P : Register>(mem: &mut Memory, reg_pair: (&R, &R), reg: (&P)) {
+        let addr = combine_to_double_byte(reg_pair.0.get(), reg_pair.1.get());
+        mem.locations[addr as usize] = reg.get();
+    }
+
+
+
+
+    pub fn add_register_pairs<P: Register>(target_reg_pair: (&mut P, &mut P), source_reg_pair: (&P, &P), flags: &mut FlagsRegister) {
+        let val1 = combine_to_double_byte(target_reg_pair.0.get(), target_reg_pair.1.get());
+        let val2 = combine_to_double_byte(source_reg_pair.0.get(), source_reg_pair.1.get());
         let total_as_u32 = (val1 as u32 + val2 as u32);
         let carry = if (val1 as u32 + val2 as u32) > u16::MAX as u32 {
              FlagValue::Set 
@@ -391,8 +436,8 @@ impl RegisterOperations {
             };
         let total_as_u16 = (total_as_u32 & 0xFFFF) as u16;
         let (h, l) = split_double_byte(total_as_u16);
-        reg_pair1.0.set(h);
-        reg_pair1.1.set(l);
+        target_reg_pair.0.set(h);
+        target_reg_pair.1.set(l);
         flags.set_carry(carry);
         flags.set_half_carry(half_carry);
         flags.set_add_subtract(FlagValue::Set);
@@ -404,7 +449,11 @@ impl RegisterOperations {
         sp.push(mem, val);
     }
 
-
+    // Note: Official instruction behaviour is pc.value + 3. Maybe change this later with wider change to how pc is implemented w.r.t. instruction parsing.
+    pub fn call(value: u16, sp: &mut StackPointer, pc: &mut ProgramCounter, mem: &mut Memory) {
+        sp.push(mem, pc.value);
+        pc.set(value);
+    }
 
 }
 
