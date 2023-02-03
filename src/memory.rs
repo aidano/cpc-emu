@@ -56,9 +56,25 @@ impl Register for Accumulator {
 }
 
 impl Accumulator {
-    pub fn sub<R : Register>(&mut self, reg: &R, flags: &mut FlagsRegister) {
+    pub fn sub_reg<R : Register>(&mut self, reg: &R, flags: &mut FlagsRegister) {
         self.set(self.get() - reg.get());
         flags.set_parity_overflow( if reg.get() & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
+    }
+
+    pub fn sub_value(&mut self, value: u8, flags: &mut FlagsRegister) {
+        let carry = if (self.value as u32 + value as u32) > u16::MAX as u32 {
+            FlagValue::Set 
+           } else {
+                FlagValue::Unset 
+           };
+        self.set(self.get() - value);
+        flags.set_parity_overflow( if value & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
+        flags.set_carry(carry);
+    }
+
+    pub fn sub_value_and_carry(&mut self, value: u8, flags: &mut FlagsRegister) {
+        let value = value + if flags.get_carry() == FlagValue::Set { 1 } else { 0 };
+        self.sub_value(value, flags);
     }
 
     pub fn and(&mut self, value: u8, flags: &mut FlagsRegister) {
@@ -81,9 +97,32 @@ impl Accumulator {
         flags.set_parity_overflow( if reg.get() & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
     }
 
+    pub fn or_a(&mut self, flags: &mut FlagsRegister) {
+        self.set(self.get() | self.get());
+        flags.set_parity_overflow( if self.get() & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
+    }
+
+
+    pub fn compare_reg<R: Register>(&self, reg: &R, flags: &mut FlagsRegister) {
+        flags.set_parity_overflow(if self.get() as i16 - (reg.get() as i16) < -128 { FlagValue::Set } else { FlagValue::Unset });        
+    }
+
+    pub fn compare_val(&self, val: u8, flags: &mut FlagsRegister) {
+        flags.set_parity_overflow(if self.get() as i16 - (val as i16) < -128 { FlagValue::Set } else { FlagValue::Unset });        
+    }
+
     pub fn xor<R : Register>(&mut self, reg: &R, flags: &mut FlagsRegister) {
         self.set(self.get() ^ reg.get());
         flags.set_parity_overflow( if reg.get() & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
+        flags.set_zero(if self.value == 0 { FlagValue::Set } else { FlagValue::Unset });
+        flags.set_sign(if self.value & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
+    }
+
+    pub fn xor_address_from_reg_pair<R : Register>(&mut self, mem: &Memory, reg_pair: (&R, &R), flags: &mut FlagsRegister) {
+        let location = combine_to_double_byte(reg_pair.0.get(), reg_pair.1.get());
+        let val = mem.locations[location as usize];
+        self.set(self.get() ^ val);
+        flags.set_parity_overflow( if val & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
         flags.set_zero(if self.value == 0 { FlagValue::Set } else { FlagValue::Unset });
         flags.set_sign(if self.value & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
     }
@@ -322,9 +361,13 @@ pub struct Registers {
     pub h_: DefaultRegister,
     pub l_: DefaultRegister,
 
+    pub i: DefaultRegister,
+    pub x: DefaultRegister,
+
     pub pc: ProgramCounter,
     pub sp: StackPointer,
-    pub maskable_interrupt_enabled: bool,
+    pub iff1: bool,
+    pub iff2: bool,
     pub interrupt_mode: u8
 }
 
@@ -396,12 +439,6 @@ impl RegisterOperations {
         RegisterOperations::ld_register_pair_with_value(reg_pair, combine_to_double_byte(0x0, value));
     }
 
-
-    // pub fn ld_register_pair_from_addr_with_register_pair<R: Register>(reg_pair_target: (&mut R, &mut R), reg_pair_addr: (&mut R, &mut R)) {
-
-    // }
-
-
     pub fn ld_addr_from_reg_pair_with_value<R : Register>(mem: &mut Memory, reg_pair: (&R, &R), value: u8) {
         let addr = combine_to_double_byte(reg_pair.0.get(), reg_pair.1.get());
         mem.locations[addr as usize] = value;
@@ -411,13 +448,39 @@ impl RegisterOperations {
         mem.locations[value as usize] = reg.get();
     }
 
+    pub fn ld_addr_from_value_with_register_pair<R : Register>(mem: &mut Memory, value: u16, reg_pair: (&R, &R)) {
+        mem.locations[value as usize] = reg_pair.1.get();
+        // seems like we just store the low byte and ignore the high byte.
+        //mem.locations[(value + 1) as usize] = reg_pair.1.get(); 
+
+    }
 
     pub fn ld_addr_from_reg_pair_with_register<R : Register, P : Register>(mem: &mut Memory, reg_pair: (&R, &R), reg: (&P)) {
         let addr = combine_to_double_byte(reg_pair.0.get(), reg_pair.1.get());
         mem.locations[addr as usize] = reg.get();
     }
 
-
+    pub fn dbl_register_pair<P: Register>(reg_pair: (&mut P, &mut P), flags: &mut FlagsRegister) {
+        let val = combine_to_double_byte(reg_pair.0.get(), reg_pair.1.get());
+        let total_as_u32 = (val as u32 + val as u32);
+        let carry = if (val as u32 + val as u32) > u16::MAX as u32 {
+             FlagValue::Set 
+            } else {
+                 FlagValue::Unset 
+            };
+        let half_carry = if (val & 8 == 1) && (val & 8 == 1) {
+                FlagValue::Set
+            } else {
+                FlagValue::Unset
+            };
+        let total_as_u16 = (total_as_u32 & 0xFFFF) as u16;
+        let (h, l) = split_double_byte(total_as_u16);
+        reg_pair.0.set(h);
+        reg_pair.1.set(l);
+        flags.set_carry(carry);
+        flags.set_half_carry(half_carry);
+        flags.set_add_subtract(FlagValue::Set);
+    }
 
 
     pub fn add_register_pairs<P: Register>(target_reg_pair: (&mut P, &mut P), source_reg_pair: (&P, &P), flags: &mut FlagsRegister) {
@@ -449,10 +512,23 @@ impl RegisterOperations {
         sp.push(mem, val);
     }
 
+    pub fn pop_register_pair<R: Register, P: Register>(reg_pair: (&mut R, &mut P), sp: &mut StackPointer, mem: &mut Memory) {
+        let (val1, val2) = split_double_byte(sp.pop(&mem));
+        reg_pair.0.set(val1);
+        reg_pair.1.set(val2);
+    }
+
     // Note: Official instruction behaviour is pc.value + 3. Maybe change this later with wider change to how pc is implemented w.r.t. instruction parsing.
     pub fn call(value: u16, sp: &mut StackPointer, pc: &mut ProgramCounter, mem: &mut Memory) {
         sp.push(mem, pc.value);
         pc.set(value);
+    }
+
+    // The contents of the passed register are shifted right one bit position. 
+    // The contents of bit 0 are copied to the carry flag and a zero is put into bit 7.
+    pub fn srl<R: Register>(reg: &mut R, flags: &mut FlagsRegister) {
+        flags.set_carry(if reg.get() & 1 == 1 { FlagValue::Set } else { FlagValue::Unset });
+        reg.set((reg.get()) >> 1 & 0x7F);
     }
 
 }
@@ -490,9 +566,12 @@ impl Registers {
             e_: DefaultRegister {name: "e'".to_string(), value: 0},
             h_: DefaultRegister {name: "h'".to_string(), value: 0},
             l_: DefaultRegister {name: "l'".to_string(), value: 0},
+            i: DefaultRegister {name: "i".to_string(), value: 0},
+            x: DefaultRegister {name: "x".to_string(), value: 0},
             pc: ProgramCounter { value: 0 }, // PC normally begins at start of memory
             sp: StackPointer { location: 0xFFFF }, // SP normally begins at the end of memory and moves down.
-            maskable_interrupt_enabled: true,
+            iff1: false,
+            iff2: false,
             interrupt_mode: 0
         }
     }

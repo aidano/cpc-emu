@@ -81,16 +81,25 @@ impl Runtime {
             let pc = self.components.registers.pc.get();
             let instruction_byte = self.components.mem.locations[self.components.registers.pc.get() as usize];
             
-            
             let instruction:&Box<dyn Instruction>;
             match instruction_byte {
+                0xCB => {
+                    self.components.registers.pc.inc();
+                    let instruction_byte = self.components.mem.locations[self.components.registers.pc.get() as usize];
+                    instruction = self.instruction_set.bit_instruction_for(instruction_byte);
+                }
+                0xDD => {
+                    self.components.registers.pc.inc();
+                    let instruction_byte = self.components.mem.locations[self.components.registers.pc.get() as usize];
+                    instruction = self.instruction_set.index_instruction_for(instruction_byte);
+                }
                 0xED => {
                     self.components.registers.pc.inc();
-                    let extended_instruction_byte = self.components.mem.locations[self.components.registers.pc.get() as usize];
-                    instruction = self.instruction_set.extended_instruction_for(extended_instruction_byte);
+                    let instruction_byte = self.components.mem.locations[self.components.registers.pc.get() as usize];
+                    instruction = self.instruction_set.extended_instruction_for(instruction_byte);
                 },
-                non_extended_byte => {
-                    instruction = self.instruction_set.instruction_for(non_extended_byte);
+                basic_instruction_byte => {
+                    instruction = self.instruction_set.instruction_for(basic_instruction_byte);
                 }
             };
             

@@ -7,7 +7,7 @@ use super::{Instruction, Operands};
 
 pub struct _0xED46 {}
 impl Instruction for _0xED46 {
-    // The value of a or written to port bc
+    // Set interrupt mode 0
     fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         components.registers.interrupt_mode = 0;
         10
@@ -32,7 +32,7 @@ impl Instruction for _0xED49 {
 
 pub struct _0xED56 {}
 impl Instruction for _0xED56 {
-    // The value of a or written to port bc
+    // Set interrupt mode 1
     fn execute(&self, components: &mut RuntimeComponents, operands: Operands) -> u16 {
         components.registers.interrupt_mode = 1;
         10
