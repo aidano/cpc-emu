@@ -31,6 +31,10 @@ pub fn run(runtime: Runtime) -> Result<(), slint::PlatformError> {
             let line = runtime.components.ppi.keyboard_line;
             (frame, line)
         };
+        // Normalise every mode to the same display footprint (640x400) so
+        // pixel shapes match the hardware: mode 0 pixels are twice as wide
+        // as tall (4x2), mode 1 square (2x2), mode 2 twice as tall (1x2).
+        let frame = frame.scaled(640 / frame.width, 400 / frame.height);
         let buffer = SharedPixelBuffer::clone_from_slice(&frame.rgba, frame.width as u32, frame.height as u32);
         window.set_frame(Image::from_rgba8(buffer));
         // Keep the keyboard line selection visible in the window title for debugging.

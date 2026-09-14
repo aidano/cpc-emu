@@ -38,6 +38,25 @@ impl Frame {
         let index = ((y as usize) * (self.width as usize) + (x as usize)) * 4;
         (self.rgba[index], self.rgba[index + 1], self.rgba[index + 2])
     }
+
+    /// Nearest-neighbour scale by integer horizontal/vertical factors. Used to
+    /// present all modes at the same display footprint with the correct pixel
+    /// aspect ratio: mode 0 pixels are twice as wide as tall, mode 1 square,
+    /// mode 2 twice as tall as wide.
+    pub fn scaled(&self, x_scale: u16, y_scale: u16) -> Frame {
+        let mut out = Frame::new(self.width * x_scale, self.height * y_scale);
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let color = self.pixel(x, y);
+                for dy in 0..y_scale {
+                    for dx in 0..x_scale {
+                        out.set_pixel(x * x_scale + dx, y * y_scale + dy, color);
+                    }
+                }
+            }
+        }
+        out
+    }
 }
 
 /// Anything that can display a frame.
@@ -92,5 +111,27 @@ mod tests {
         assert_eq!(frame.pixel(3, 2), (0x12, 0x34, 0x56));
         assert_eq!(frame.pixel(0, 0), (0, 0, 0));
         assert_eq!(frame.rgba.len(), 4 * 3 * 4);
+    }
+
+    #[test]
+    fn test_frame_scaled() {
+        let mut frame = Frame::new(2, 2);
+        frame.set_pixel(0, 0, (255, 0, 0));
+        frame.set_pixel(1, 1, (0, 255, 0));
+        let scaled = frame.scaled(4, 2);
+        assert_eq!((scaled.width, scaled.height), (8, 4));
+        // Red block is 4 wide, 2 tall: a 2:1 wide pixel.
+        assert_eq!(scaled.pixel(0, 0), (255, 0, 0));
+        assert_eq!(scaled.pixel(3, 1), (255, 0, 0));
+        assert_eq!(scaled.pixel(4, 1), (0, 0, 0));
+        // Green block is 4 wide, 2 tall starting at (4, 2).
+        assert_eq!(scaled.pixel(4, 2), (0, 255, 0));
+        assert_eq!(scaled.pixel(7, 3), (0, 255, 0));
+        // Mode footprints all normalise to 640x400.
+        for width in [160u16, 320, 640] {
+            let frame = Frame::new(width, 200);
+            let scaled = frame.scaled(640 / frame.width, 400 / frame.height);
+            assert_eq!((scaled.width, scaled.height), (640, 400));
+        }
     }
 }
