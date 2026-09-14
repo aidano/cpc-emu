@@ -60,13 +60,73 @@ impl Dsk {
         let res = match DiscInformationBlock::from_bytes(bytes)  {
             Ok(dib) => {
                 let mut dsk = Dsk { dsk_type: dib.dsk_type, dsk_info: dib, tracks: Vec::new() };
-                // The first Track Block is located at offset &100 in the disk image file. 
+                // The first Track Block is located at offset &100 in the disk image file.
                 dsk.tracks = dsk.dsk_info.load_tracks(&bytes[0x100..]);
                 Ok(dsk)
             },
             Err(msg) => Err(msg)
         };
         res
+    }
+
+    /// Looks up a sector by its C/H/R id (the NEC765 command parameters),
+    /// returning the data plus the recorded FDC status bytes.
+    pub fn read_sector(&self, track: u8, side: u8, sector_id: u8) -> Option<SectorView<'_>> {
+        let tr = self.tracks.iter().find(|t| {
+            t.track_info.track_number == track && t.track_info.side_number == side
+        })?;
+        tr.sector_view(sector_id)
+    }
+
+    /// The first sector of a track, for the Read ID command.
+    pub fn first_sector(&self, track: u8, side: u8) -> Option<SectorView<'_>> {
+        let tr = self.tracks.iter().find(|t| {
+            t.track_info.track_number == track && t.track_info.side_number == side
+        })?;
+        let si = tr.sector_infos.first()?;
+        Some(tr.view_of(si))
+    }
+}
+
+/// A sector located in the disc image: data plus its recorded identity and
+/// FDC status.
+pub struct SectorView<'a> {
+    pub data: &'a [u8],
+    pub c: u8,
+    pub h: u8,
+    pub r: u8,
+    pub n: u8,
+    pub st1: u8,
+    pub st2: u8,
+}
+
+impl Track {
+    fn sector_view(&self, sector_id: u8) -> Option<SectorView<'_>> {
+        let si = self.sector_infos.iter().find(|si| si.sector_id == sector_id)?;
+        Some(self.view_of(si))
+    }
+
+    fn view_of<'a>(&'a self, si: &'a SectorInfo) -> SectorView<'a> {
+        // Sector data follows the Track Information Block sequentially in
+        // sector_infos order; each sector occupies 128 << n bytes.
+        let mut offset = 0usize;
+        for earlier in &self.sector_infos {
+            if std::ptr::eq(earlier, si) {
+                break;
+            }
+            offset += 128usize << earlier.sector_size;
+        }
+        let len = 128usize << si.sector_size;
+        let end = (offset + len).min(self.sector_data.len());
+        SectorView {
+            data: &self.sector_data[offset..end],
+            c: si.track_number,
+            h: si.side_number,
+            r: si.sector_id,
+            n: si.sector_size,
+            st1: si.fdc_status_register_1,
+            st2: si.fdc_status_register_2,
+        }
     }
 }
 
@@ -103,9 +163,12 @@ impl DiscInformationBlock {
     fn load_tracks(&mut self, bytes: &[u8]) -> Vec<Track> {
         let mut tracks: Vec<Track> = Vec::new();
         for x in 0..self.track_count {
-            let track_start: u32 = x as u32 * self.track_size;
-            let track_end = track_start + self.track_size - 1;
-            match Track::init_from_bytes(&bytes[track_start as usize..track_end as usize], self.track_size) {
+            let track_start: usize = x as usize * self.track_size as usize;
+            let track_end = track_start + self.track_size as usize;
+            if track_end > bytes.len() {
+                break;
+            }
+            match Track::init_from_bytes(&bytes[track_start..track_end]) {
                 Ok(track) => tracks.push(track),
                 Err(msg) => { dbg!(msg);() }
             }
@@ -118,7 +181,7 @@ impl DiscInformationBlock {
 
 
 impl Track {
-    fn init_from_bytes(bytes: &[u8], track_size: u32) -> Result<Track, &str> {
+    fn init_from_bytes(bytes: &[u8]) -> Result<Track, &str> {
         
         let track_info = TrackInformationBlock::init_from_bytes(bytes);
         let mut sector_infos: Vec<SectorInfo> = Vec::new();

@@ -1,4 +1,6 @@
 /target
 dsk_files/
 roms/
+dsk/
+references/
 .DS_Store

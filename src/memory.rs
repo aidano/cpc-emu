@@ -1,286 +1,252 @@
-use std::{fmt, ops::Add};
+use std::fmt;
 
-use crate::{utils::{split_double_byte, combine_to_double_byte}, instruction_set::Instruction};
+use crate::utils::{split_double_byte, combine_to_double_byte};
+
+/// The gate array RAM configurations for a 128K machine: each entry maps the
+/// four 16K address regions to a physical RAM block. Blocks 0-3 form the
+/// standard 64K bank; blocks 4-7 are the expansion bank. (Reference:
+/// Caprice32 ga_init_banking.)
+const RAM_CONFIGURATIONS: [[usize; 4]; 8] = [
+    [0, 1, 2, 3],
+    [0, 1, 2, 7],
+    [4, 5, 6, 7],
+    [0, 3, 2, 7],
+    [0, 4, 2, 3],
+    [0, 5, 2, 3],
+    [0, 6, 2, 3],
+    [0, 7, 2, 3],
+];
 
 pub struct Memory {
-    pub locations: [u8; 0xFFFF]
+    /// Physical RAM: 8 x 16K blocks = 128K (6128).
+    blocks: [[u8; 0x4000]; 8],
+    /// Current RAM configuration: address region (0-3) -> physical block.
+    ram_config: [usize; 4],
+    rom_os: [u8; 0x4000],
+    /// Upper ROM slots 0-15 (16K each). Slot 0 = BASIC; the 6128's soldered
+    /// AMSDOS conventionally occupies slot 7. Unfitted sockets float high.
+    rom_expansions: [Option<Box<[u8; 0x4000]>>; 16],
+
+    // Gate array ROM configuration (updated via port writes)
+    pub lower_rom_enabled: bool,
+    pub upper_rom_enabled: bool,
+    /// Selected upper ROM number.
+    pub upper_rom_number: u8,
+    /// Diagnostic: global instruction counter, updated by the runtime and
+    /// shown in the per-instruction debug trace.
+    pub diagnostics_step: u64,
 }
 
 impl Memory {
     pub fn default() -> Memory {
-        Memory { locations: [0x01; 0xFFFF] }
+        Memory {
+            blocks: [[0x01; 0x4000]; 8],
+            ram_config: [0, 1, 2, 3],
+            rom_os: [0x00; 0x4000],
+            rom_expansions: Default::default(),
+            lower_rom_enabled: false,
+            upper_rom_enabled: false,
+            upper_rom_number: 0,
+            diagnostics_step: 0,
+        }
+    }
+
+    pub fn read(&self, address: u16) -> u8 {
+        if address < 0x4000 && self.lower_rom_enabled {
+            return self.rom_os[address as usize];
+        }
+        if address >= 0xC000 && self.upper_rom_enabled {
+            // Only fitted ROM slots answer; empty sockets float high. The
+            // firmware's ROM scan depends on reading 0xFF from empty sockets
+            // to skip them.
+            if let Some(rom) = &self.rom_expansions[self.upper_rom_number as usize] {
+                return rom[(address - 0xC000) as usize];
+            }
+            return 0xFF;
+        }
+        let region = (address >> 14) as usize;
+        self.blocks[self.ram_config[region]][(address & 0x3FFF) as usize]
+    }
+
+    pub fn write(&mut self, address: u16, value: u8) {
+        let region = (address >> 14) as usize;
+        self.blocks[self.ram_config[region]][(address & 0x3FFF) as usize] = value;
+    }
+
+    /// Selects one of the gate array RAM configurations (value written with
+    /// bits 7-6 set to 11 on ports 0x0000-0x7FFF).
+    pub fn set_ram_config(&mut self, config: u8) {
+        self.ram_config = RAM_CONFIGURATIONS[(config & 0x07) as usize];
+    }
+
+    /// Records the upper ROM selection. With only BASIC fitted, every slot
+    /// resolves to the BASIC image, so this is bookkeeping only.
+    pub fn set_upper_rom_number(&mut self, number: u8) {
+        self.upper_rom_number = number;
+    }
+
+
+    pub fn read16(&self, address: u16) -> u16 {
+        let low = self.read(address);
+        let high = self.read(address.wrapping_add(1));
+        combine_to_double_byte(high, low)
+    }
+
+    pub fn write16(&mut self, address: u16, value: u16) {
+        let (high, low) = split_double_byte(value);
+        self.write(address, low);
+        self.write(address.wrapping_add(1), high);
+    }
+
+    /// Loads the OS ROM image (lower ROM, 0x0000-0x3FFF).
+    pub fn load_os_rom(&mut self, bytes: &[u8; 0x4000]) {
+        self.rom_os.copy_from_slice(bytes);
+        self.lower_rom_enabled = true;
+    }
+
+    /// Loads the expansion ROM image (upper ROM, 0xC000-0xFFFF, e.g. BASIC)
+    /// into the given slot, and enables upper ROM banking, as a real machine
+    /// does when a ROM is fitted.
+    pub fn load_expansion_rom_into_slot(&mut self, bytes: &[u8; 0x4000], slot: u8) {
+        let mut rom = Box::new([0x00; 0x4000]);
+        rom.copy_from_slice(bytes);
+        self.rom_expansions[slot as usize] = Some(rom);
+        self.upper_rom_enabled = true;
+    }
+
+    /// The BASIC ROM conventionally occupies upper ROM slot 0.
+    pub fn load_expansion_rom(&mut self, bytes: &[u8; 0x4000]) {
+        self.load_expansion_rom_into_slot(bytes, 0);
     }
 }
 
-pub trait Register {
-    fn set(&mut self, value: u8);
-    fn get(&self) -> u8;
-    fn name(&self) -> &str;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum R8 { A, F, B, C, D, E, H, L, IXH, IXL, IYH, IYL, I, R }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum R16 { AF, BC, DE, HL, IX, IY, SP, PC }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cond { NZ, Z, NC, C, PO, PE, P, M }
+
+impl Cond {
+    pub fn from_bits(bits: u8) -> Cond {
+        match bits & 0x07 {
+            0 => Cond::NZ,
+            1 => Cond::Z,
+            2 => Cond::NC,
+            3 => Cond::C,
+            4 => Cond::PO,
+            5 => Cond::PE,
+            6 => Cond::P,
+            _ => Cond::M,
+        }
+    }
+
+    pub fn evaluate(&self, flags: &FlagsRegister) -> bool {
+        match self {
+            Cond::NZ => !flags.zero(),
+            Cond::Z => flags.zero(),
+            Cond::NC => !flags.carry(),
+            Cond::C => flags.carry(),
+            Cond::PO => !flags.parity_overflow(),
+            Cond::PE => flags.parity_overflow(),
+            Cond::P => !flags.sign(),
+            Cond::M => flags.sign(),
+        }
+    }
 }
+
 pub struct DefaultRegister {
     name: String,
     value: u8
 }
 
-impl Register for DefaultRegister {
-    fn set(&mut self, value: u8) {
+impl DefaultRegister {
+    pub fn new(name: &str) -> DefaultRegister {
+        DefaultRegister { name: name.to_string(), value: 0 }
+    }
+
+    pub fn set(&mut self, value: u8) {
         self.value = value;
     }
 
-    fn get(&self) -> u8 {
+    pub fn get(&self) -> u8 {
         self.value
     }
-
-    fn name(&self) -> &str {
-        self.name.as_str()
-    }
 }
 
-pub struct Accumulator {
-    name: String,
-    value: u8
-}
-
-impl Register for Accumulator {
-    fn set(&mut self, value: u8) {
-        self.value = value;
-    }
-
-    fn get(&self) -> u8 {
-        self.value
-    }
-
-    fn name(&self) -> &str {
-        self.name.as_str()
-    }
-}
-
-impl Accumulator {
-    pub fn sub_reg<R : Register>(&mut self, reg: &R, flags: &mut FlagsRegister) {
-        self.set(self.get() - reg.get());
-        flags.set_parity_overflow( if reg.get() & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
-    }
-
-    pub fn sub_value(&mut self, value: u8, flags: &mut FlagsRegister) {
-        let carry = if (self.value as u32 + value as u32) > u16::MAX as u32 {
-            FlagValue::Set 
-           } else {
-                FlagValue::Unset 
-           };
-        self.set(self.get() - value);
-        flags.set_parity_overflow( if value & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
-        flags.set_carry(carry);
-    }
-
-    pub fn sub_value_and_carry(&mut self, value: u8, flags: &mut FlagsRegister) {
-        let value = value + if flags.get_carry() == FlagValue::Set { 1 } else { 0 };
-        self.sub_value(value, flags);
-    }
-
-    pub fn and(&mut self, value: u8, flags: &mut FlagsRegister) {
-        self.set(self.get() & value);
-        // todo: set flags
-        flags.set_carry(FlagValue::Unset);
-        flags.set_add_subtract(FlagValue::Unset);
-        flags.set_half_carry(FlagValue::Set);
-
-        let overflow = if self.get() & 128 > 1 {
-            FlagValue::Set
-        } else {
-            FlagValue::Unset
-        };
-        flags.set_parity_overflow(overflow);
-    }
-
-    pub fn or<R : Register>(&mut self, reg: &R, flags: &mut FlagsRegister) {
-        self.set(self.get() | reg.get());
-        flags.set_parity_overflow( if reg.get() & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
-    }
-
-    pub fn or_a(&mut self, flags: &mut FlagsRegister) {
-        self.set(self.get() | self.get());
-        flags.set_parity_overflow( if self.get() & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
-    }
-
-
-    pub fn compare_reg<R: Register>(&self, reg: &R, flags: &mut FlagsRegister) {
-        flags.set_parity_overflow(if self.get() as i16 - (reg.get() as i16) < -128 { FlagValue::Set } else { FlagValue::Unset });        
-    }
-
-    pub fn compare_val(&self, val: u8, flags: &mut FlagsRegister) {
-        flags.set_parity_overflow(if self.get() as i16 - (val as i16) < -128 { FlagValue::Set } else { FlagValue::Unset });        
-    }
-
-    pub fn xor<R : Register>(&mut self, reg: &R, flags: &mut FlagsRegister) {
-        self.set(self.get() ^ reg.get());
-        flags.set_parity_overflow( if reg.get() & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
-        flags.set_zero(if self.value == 0 { FlagValue::Set } else { FlagValue::Unset });
-        flags.set_sign(if self.value & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
-    }
-
-    pub fn xor_address_from_reg_pair<R : Register>(&mut self, mem: &Memory, reg_pair: (&R, &R), flags: &mut FlagsRegister) {
-        let location = combine_to_double_byte(reg_pair.0.get(), reg_pair.1.get());
-        let val = mem.locations[location as usize];
-        self.set(self.get() ^ val);
-        flags.set_parity_overflow( if val & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
-        flags.set_zero(if self.value == 0 { FlagValue::Set } else { FlagValue::Unset });
-        flags.set_sign(if self.value & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
-    }
-
-    pub fn xor_a(&mut self, flags: &mut FlagsRegister) {
-        self.set(self.get() ^ self.get());
-        flags.set_parity_overflow( if self.get() & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
-    }
-
-    // Add the passed register to a
-    pub fn add_a<R : Register>(&mut self, reg: &R, flags: &mut FlagsRegister) {
-        let carry = flags.get_carry();
-        self.set(self.get() + reg.get()); // todo: read up on this.
-        flags.set_parity_overflow( if reg.get() & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
-    }
-
-    // Add the passed register and the carry flag to a
-    pub fn adc_a<R : Register>(&mut self, reg: &R, flags: &mut FlagsRegister) {
-        let carry = flags.get_carry();
-        self.set(self.get() + reg.get() + carry); // todo: read up on this.
-        flags.set_parity_overflow( if reg.get() & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
-    }
-}
-
-
-impl fmt::Debug for dyn Register {
+impl fmt::Debug for DefaultRegister {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Register")
-        .field("name", &self.name())
-        .field("value", &self.get())
-        .finish()
+        write!(f, "{}:{:02X}", self.name, self.value)
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct FlagsRegister {
     value: u8
 }
 
-impl Register for FlagsRegister {
-    fn set(&mut self, value: u8) {
-        self.value = value;
+impl FlagsRegister {
+    pub fn new() -> FlagsRegister {
+        FlagsRegister { value: 0 }
     }
 
-    fn get(&self) -> u8 {
+    // Bit       7 6 5 4 3 2 1 0
+    // Position  S Z / H / P/V N C
+    pub const CARRY: u8 = 0x01;
+    pub const ADD_SUBTRACT: u8 = 0x02;
+    pub const PARITY_OVERFLOW: u8 = 0x04;
+    pub const FLAG_X1: u8 = 0x08;
+    pub const HALF_CARRY: u8 = 0x10;
+    pub const FLAG_X2: u8 = 0x20;
+    pub const ZERO: u8 = 0x40;
+    pub const SIGN: u8 = 0x80;
+
+    pub fn get(&self) -> u8 {
         self.value
     }
 
-    fn name(&self) -> &str {
-        "F"
+    pub fn set(&mut self, value: u8) {
+        self.value = value;
     }
+
+    fn set_flag(&mut self, mask: u8, set: bool) {
+        if set {
+            self.value |= mask;
+        } else {
+            self.value &= !mask;
+        }
+    }
+
+    pub fn carry(&self) -> bool { self.value & Self::CARRY != 0 }
+    pub fn set_carry(&mut self, set: bool) { self.set_flag(Self::CARRY, set); }
+
+    pub fn add_subtract(&self) -> bool { self.value & Self::ADD_SUBTRACT != 0 }
+    pub fn set_add_subtract(&mut self, set: bool) { self.set_flag(Self::ADD_SUBTRACT, set); }
+
+    pub fn parity_overflow(&self) -> bool { self.value & Self::PARITY_OVERFLOW != 0 }
+    pub fn set_parity_overflow(&mut self, set: bool) { self.set_flag(Self::PARITY_OVERFLOW, set); }
+
+    pub fn half_carry(&self) -> bool { self.value & Self::HALF_CARRY != 0 }
+    pub fn set_half_carry(&mut self, set: bool) { self.set_flag(Self::HALF_CARRY, set); }
+
+    pub fn zero(&self) -> bool { self.value & Self::ZERO != 0 }
+    pub fn set_zero(&mut self, set: bool) { self.set_flag(Self::ZERO, set); }
+
+    pub fn sign(&self) -> bool { self.value & Self::SIGN != 0 }
+    pub fn set_sign(&mut self, set: bool) { self.set_flag(Self::SIGN, set); }
 }
-
-impl FlagsRegister {
-    
-
-
-    //
-    // Bit	    7	6	5	4	3	2	1	0
-    // Position	S	Z	/	H	/	P/V	N	C
-    //
-    pub fn set_carry(&mut self, value: FlagValue) {
-        match value {
-            FlagValue::Set => self.value = self.value | 1,
-            FlagValue::Unset => self.value = self.value & (255 - 1)
-        }
-    }
-
-    pub fn set_add_subtract(&mut self, value: FlagValue) {
-        match value {
-            FlagValue::Set => self.value = self.value | 2,
-            FlagValue::Unset => self.value = self.value & (255 - 2)
-        }
-    }
-
-    pub fn set_parity_overflow(&mut self, value: FlagValue) {
-        match value {
-            FlagValue::Set => self.value = self.value | 4,
-            FlagValue::Unset => self.value = self.value & (255 - 4)
-        }
-    }
-
-    pub fn set_half_carry(&mut self, value: FlagValue) {
-        match value {
-            FlagValue::Set => self.value = self.value | 16,
-            FlagValue::Unset => self.value = self.value & (255 - 16)
-        }
-    }
-
-    pub fn set_zero(&mut self, value: FlagValue) {
-        self.value = match value {
-            FlagValue::Set => self.value | 64,
-            FlagValue::Unset => self.value & (255 - 64)
-        }
-    }
-
-    pub fn set_sign(&mut self, value: FlagValue) {
-        self.value = match value {
-            FlagValue::Set => self.value | 128,
-            FlagValue::Unset => self.value & (255 - 128)
-        }
-    }
-
-    pub fn get_carry(&mut self) -> FlagValue {
-        match  self.value & 1 {
-            1 => FlagValue::Set,
-            0 => FlagValue::Unset,
-            _ => panic!("Shouldn't happen")
-        }
-    }
-
-    pub fn get_add_subtract(&mut self) -> FlagValue {
-        match  self.value & 2 {
-            2 => FlagValue::Set,
-            0 => FlagValue::Unset,
-            _ => panic!("Shouldn't happen")
-        }
-    }
-
-    pub fn get_parity_overflow(&mut self) -> FlagValue {
-        match  self.value & 4 {
-            4 => FlagValue::Set,
-            0 => FlagValue::Unset,
-            _ => panic!("Shouldn't happen")
-        }
-    }
-
-    pub fn get_half_carry(&mut self) -> FlagValue {
-        match  self.value & 16 {
-            16 => FlagValue::Set,
-            0 => FlagValue::Unset,
-            _ => panic!("Shouldn't happen")
-        }
-    }
-
-    pub fn get_zero(&mut self) -> FlagValue {
-        match  self.value & 64 {
-            64 => FlagValue::Set,
-            0 => FlagValue::Unset,
-            _ => panic!("Shouldn't happen")
-        }
-    }
-
-    pub fn get_sign(&self) -> FlagValue {
-        match  self.value & 128 {
-            128 => FlagValue::Set,
-            0 => FlagValue::Unset,
-            _ => panic!("Shouldn't happen")
-        }
-    }
-}
-
-
 
 pub struct ProgramCounter {
     value: u16
 }
 
 impl ProgramCounter {
+    pub fn new() -> ProgramCounter {
+        ProgramCounter { value: 0 }
+    }
+
     pub fn set(&mut self, value: u16) {
         self.value = value;
     }
@@ -289,42 +255,40 @@ impl ProgramCounter {
         self.value
     }
 
-    pub(crate) fn inc(&mut self) {
-        self.value = self.value + 1;
-    }
-
-    pub(crate) fn dec(&mut self) {
-        self.value = self.value - 1;
+    pub fn inc(&mut self) {
+        self.value = self.value.wrapping_add(1);
     }
 }
 
 pub struct StackPointer {
-    location: usize
+    location: u16
 }
 
 impl StackPointer {
+    pub fn get(&self) -> u16 {
+        self.location
+    }
+
+    pub fn set(&mut self, value: u16) {
+        self.location = value;
+    }
+
     pub fn push(&mut self, memory: &mut Memory, value: u16) {
         let (high, low) = split_double_byte(value);
-        self.location -= 1;
-        memory.locations[self.location] = high;
-        self.location -= 1;
-        memory.locations[self.location] = low;
+        self.location = self.location.wrapping_sub(1);
+        memory.write(self.location, high);
+        self.location = self.location.wrapping_sub(1);
+        memory.write(self.location, low);
     }
 
     pub fn pop(&mut self, memory: &Memory) -> u16 {
-        let low = memory.locations[self.location];
-        self.location += 1;
-        let high = memory.locations[self.location];
-        self.location += 1;
+        let low = memory.read(self.location);
+        self.location = self.location.wrapping_add(1);
+        let high = memory.read(self.location);
+        self.location = self.location.wrapping_add(1);
         combine_to_double_byte(high, low)
     }
-
-    pub fn set(&mut self, value: usize) {
-        self.location = value;
-    }
 }
-
-
 
 pub struct AddressBus {
     pub value: u16 // TODO: simple impl for now.
@@ -333,18 +297,20 @@ pub struct AddressBus {
 // TODO: This struct might actually represent both the address and the data bus, in which case the above struct can go away.
 pub struct DataBus {}
 impl DataBus {
-    
     pub fn write(&self, port: u16, value: u8) {
         // stub for now
     }
 
     pub fn read(&self, port: u16) -> u8 {
-        0xEF // dummy value for now
+        // Idle-high default: unimplemented devices read as inactive. The
+        // keyboard matrix is active-low, so 0xFF means "no keys pressed";
+        // a lower value would look like stuck keys to the firmware.
+        0xFF
     }
 }
 
 pub struct Registers {
-    pub a: Accumulator,
+    pub a: DefaultRegister,
     pub f: FlagsRegister,
     pub b: DefaultRegister,
     pub c: DefaultRegister,
@@ -352,7 +318,7 @@ pub struct Registers {
     pub e: DefaultRegister,
     pub h: DefaultRegister,
     pub l: DefaultRegister,
-    pub a_: Accumulator,
+    pub a_: DefaultRegister,
     pub f_: FlagsRegister,
     pub b_: DefaultRegister,
     pub c_: DefaultRegister,
@@ -360,233 +326,127 @@ pub struct Registers {
     pub e_: DefaultRegister,
     pub h_: DefaultRegister,
     pub l_: DefaultRegister,
-
+    pub ixh: DefaultRegister,
+    pub ixl: DefaultRegister,
+    pub iyh: DefaultRegister,
+    pub iyl: DefaultRegister,
     pub i: DefaultRegister,
-    pub x: DefaultRegister,
+    pub r: DefaultRegister,
 
     pub pc: ProgramCounter,
     pub sp: StackPointer,
     pub iff1: bool,
     pub iff2: bool,
-    pub interrupt_mode: u8
-}
-
-pub struct RegisterOperations {}
-
-impl RegisterOperations {
-
-    pub fn dec<R: Register>(reg: &mut R, flags: &mut FlagsRegister) {
-        reg.set(reg.get() - 1);
-        flags.set_parity_overflow( if reg.get() & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
-        flags.set_add_subtract(FlagValue::Set);
-        flags.set_zero(if reg.get() == 0 { FlagValue::Set } else { FlagValue::Unset});
-        flags.set_sign(if (reg.get() as i8) < 0 { FlagValue::Set } else { FlagValue::Unset });
-    }
-    
-    pub fn dec_register_pair<R: Register>(reg_pair: (&mut R, &mut R), flags: &mut FlagsRegister) {
-        let value = combine_to_double_byte(reg_pair.0.get(), reg_pair.1.get()) - 1;
-        let (high, low) = split_double_byte(value);
-        reg_pair.0.set(high);
-        reg_pair.1.set(low);
-        flags.set_add_subtract(FlagValue::Set);
-    }
-
-    pub fn inc<R: Register>(reg: &mut R, flags: &mut FlagsRegister) {
-        let half_carry = ((reg.get() & 0xf) + (1 & 0xf)) & 0x10 == 0x10;
-        reg.set(reg.get() + 1);
-        flags.set_parity_overflow( if reg.get() & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
-        flags.set_half_carry( if half_carry { FlagValue::Set } else { FlagValue::Unset });
-        flags.set_add_subtract(FlagValue::Unset);
-    }
-
-    pub fn inc_register_pair<R: Register>(reg_pair: (&mut R, &mut R), flags: &mut FlagsRegister) {
-        let half_carry = ((reg_pair.0.get() & 0xf) + (1 & 0xf)) & 0x10 == 0x10;
-        let value = combine_to_double_byte(reg_pair.0.get(), reg_pair.1.get()) + 1;
-        let (high, low) = split_double_byte(value);
-        reg_pair.0.set(high);
-        reg_pair.1.set(low);
-        // flags.set_add_subtract(FlagValue::Unset);
-        // flags.set_parity_overflow( if reg_pair.0.get() & 128 == 128 { FlagValue::Set } else { FlagValue::Unset });
-        // flags.set_half_carry( if half_carry { FlagValue::Set } else { FlagValue::Unset });
-    }
-
-
-    pub fn ld_register_with_value<R: Register>(reg: &mut R, value: u8) {
-        reg.set(value);
-    }
-
-    pub fn ld_register_from_register<R: Register, T: Register>(source: &R, target: &mut T) {
-        target.set(source.get());
-    }
-
-    pub fn ld_register_from_addr<R: Register>(mem: &Memory, reg: &mut R, value: u16) {
-        reg.set(mem.locations[value as usize]);
-    }
-
-    pub fn ld_register_from_addr_with_register_pair<R : Register, P: Register>(mem: &Memory, reg: &mut R, reg_pair: (&P, &P)) {
-        let addr = combine_to_double_byte(reg_pair.0.get(), reg_pair.1.get());
-        reg.set(mem.locations[addr as usize]);
-    }
-
-    pub fn ld_register_pair_with_value<R: Register>(reg_pair: (&mut R, &mut R), value: u16) {
-        let (high, low) = split_double_byte(value);
-        reg_pair.0.set(high);
-        reg_pair.1.set(low);
-    }
-
-    pub fn ld_register_pair_from_addr<R: Register>(mem: &Memory, reg_pair: (&mut R, &mut R), addr: u16) {
-        let value = mem.locations[addr as usize];
-        RegisterOperations::ld_register_pair_with_value(reg_pair, combine_to_double_byte(0x0, value));
-    }
-
-    pub fn ld_addr_from_reg_pair_with_value<R : Register>(mem: &mut Memory, reg_pair: (&R, &R), value: u8) {
-        let addr = combine_to_double_byte(reg_pair.0.get(), reg_pair.1.get());
-        mem.locations[addr as usize] = value;
-    }
-
-    pub fn ld_addr_from_value_with_register<R : Register>(mem: &mut Memory, value: u16, reg: &R) {
-        mem.locations[value as usize] = reg.get();
-    }
-
-    pub fn ld_addr_from_value_with_register_pair<R : Register>(mem: &mut Memory, value: u16, reg_pair: (&R, &R)) {
-        mem.locations[value as usize] = reg_pair.1.get();
-        // seems like we just store the low byte and ignore the high byte.
-        //mem.locations[(value + 1) as usize] = reg_pair.1.get(); 
-
-    }
-
-    pub fn ld_addr_from_reg_pair_with_register<R : Register, P : Register>(mem: &mut Memory, reg_pair: (&R, &R), reg: (&P)) {
-        let addr = combine_to_double_byte(reg_pair.0.get(), reg_pair.1.get());
-        mem.locations[addr as usize] = reg.get();
-    }
-
-    pub fn dbl_register_pair<P: Register>(reg_pair: (&mut P, &mut P), flags: &mut FlagsRegister) {
-        let val = combine_to_double_byte(reg_pair.0.get(), reg_pair.1.get());
-        let total_as_u32 = (val as u32 + val as u32);
-        let carry = if (val as u32 + val as u32) > u16::MAX as u32 {
-             FlagValue::Set 
-            } else {
-                 FlagValue::Unset 
-            };
-        let half_carry = if (val & 8 == 1) && (val & 8 == 1) {
-                FlagValue::Set
-            } else {
-                FlagValue::Unset
-            };
-        let total_as_u16 = (total_as_u32 & 0xFFFF) as u16;
-        let (h, l) = split_double_byte(total_as_u16);
-        reg_pair.0.set(h);
-        reg_pair.1.set(l);
-        flags.set_carry(carry);
-        flags.set_half_carry(half_carry);
-        flags.set_add_subtract(FlagValue::Set);
-    }
-
-
-    pub fn add_register_pairs<P: Register>(target_reg_pair: (&mut P, &mut P), source_reg_pair: (&P, &P), flags: &mut FlagsRegister) {
-        let val1 = combine_to_double_byte(target_reg_pair.0.get(), target_reg_pair.1.get());
-        let val2 = combine_to_double_byte(source_reg_pair.0.get(), source_reg_pair.1.get());
-        let total_as_u32 = (val1 as u32 + val2 as u32);
-        let carry = if (val1 as u32 + val2 as u32) > u16::MAX as u32 {
-             FlagValue::Set 
-            } else {
-                 FlagValue::Unset 
-            };
-        let half_carry = if (val1 & 8 == 1) && (val2 & 8 == 1) {
-                FlagValue::Set
-            } else {
-                FlagValue::Unset
-            };
-        let total_as_u16 = (total_as_u32 & 0xFFFF) as u16;
-        let (h, l) = split_double_byte(total_as_u16);
-        target_reg_pair.0.set(h);
-        target_reg_pair.1.set(l);
-        flags.set_carry(carry);
-        flags.set_half_carry(half_carry);
-        flags.set_add_subtract(FlagValue::Set);
-    }
-
-
-    pub fn push_register_pair<R: Register, P: Register>(reg_pair: (&R, &P), sp: &mut StackPointer, mem: &mut Memory) {
-        let val = combine_to_double_byte(reg_pair.0.get(), reg_pair.1.get());
-        sp.push(mem, val);
-    }
-
-    pub fn pop_register_pair<R: Register, P: Register>(reg_pair: (&mut R, &mut P), sp: &mut StackPointer, mem: &mut Memory) {
-        let (val1, val2) = split_double_byte(sp.pop(&mem));
-        reg_pair.0.set(val1);
-        reg_pair.1.set(val2);
-    }
-
-    // Note: Official instruction behaviour is pc.value + 3. Maybe change this later with wider change to how pc is implemented w.r.t. instruction parsing.
-    pub fn call(value: u16, sp: &mut StackPointer, pc: &mut ProgramCounter, mem: &mut Memory) {
-        sp.push(mem, pc.value);
-        pc.set(value);
-    }
-
-    // The contents of the passed register are shifted right one bit position. 
-    // The contents of bit 0 are copied to the carry flag and a zero is put into bit 7.
-    pub fn srl<R: Register>(reg: &mut R, flags: &mut FlagsRegister) {
-        flags.set_carry(if reg.get() & 1 == 1 { FlagValue::Set } else { FlagValue::Unset });
-        reg.set((reg.get()) >> 1 & 0x7F);
-    }
-
-}
-
-impl Add<FlagValue> for u8 {
-    type Output = u8;
-
-    fn add(self, rhs: FlagValue) -> Self::Output {
-        return if rhs == FlagValue::Set { self + 1 } else { self }
-    }
-}
-
-#[derive(PartialEq)]
-pub enum FlagValue {
-    Set,
-    Unset
+    pub interrupt_mode: u8,
+    pub halted: bool,
+    pub ei_delay: bool
 }
 
 impl Registers {
+    pub fn get8(&self, r: R8) -> u8 {
+        match r {
+            R8::A => self.a.get(),
+            R8::F => self.f.get(),
+            R8::B => self.b.get(),
+            R8::C => self.c.get(),
+            R8::D => self.d.get(),
+            R8::E => self.e.get(),
+            R8::H => self.h.get(),
+            R8::L => self.l.get(),
+            R8::IXH => self.ixh.get(),
+            R8::IXL => self.ixl.get(),
+            R8::IYH => self.iyh.get(),
+            R8::IYL => self.iyl.get(),
+            R8::I => self.i.get(),
+            R8::R => self.r.get(),
+        }
+    }
+
+    pub fn set8(&mut self, r: R8, value: u8) {
+        match r {
+            R8::A => self.a.set(value),
+            R8::F => self.f.set(value),
+            R8::B => self.b.set(value),
+            R8::C => self.c.set(value),
+            R8::D => self.d.set(value),
+            R8::E => self.e.set(value),
+            R8::H => self.h.set(value),
+            R8::L => self.l.set(value),
+            R8::IXH => self.ixh.set(value),
+            R8::IXL => self.ixl.set(value),
+            R8::IYH => self.iyh.set(value),
+            R8::IYL => self.iyl.set(value),
+            R8::I => self.i.set(value),
+            R8::R => self.r.set(value),
+        }
+    }
+
+    pub fn get16(&self, r: R16) -> u16 {
+        match r {
+            R16::AF => combine_to_double_byte(self.a.get(), self.f.get()),
+            R16::BC => combine_to_double_byte(self.b.get(), self.c.get()),
+            R16::DE => combine_to_double_byte(self.d.get(), self.e.get()),
+            R16::HL => combine_to_double_byte(self.h.get(), self.l.get()),
+            R16::IX => combine_to_double_byte(self.ixh.get(), self.ixl.get()),
+            R16::IY => combine_to_double_byte(self.iyh.get(), self.iyl.get()),
+            R16::SP => self.sp.get(),
+            R16::PC => self.pc.get(),
+        }
+    }
+
+    pub fn set16(&mut self, r: R16, value: u16) {
+        let (high, low) = split_double_byte(value);
+        match r {
+            R16::AF => { self.a.set(high); self.f.set(low); },
+            R16::BC => { self.b.set(high); self.c.set(low); },
+            R16::DE => { self.d.set(high); self.e.set(low); },
+            R16::HL => { self.h.set(high); self.l.set(low); },
+            R16::IX => { self.ixh.set(high); self.ixl.set(low); },
+            R16::IY => { self.iyh.set(high); self.iyl.set(low); },
+            R16::SP => self.sp.set(value),
+            R16::PC => self.pc.set(value),
+        }
+    }
+
     pub fn default() -> Registers {
         Registers {
-            a: Accumulator { name: "a".to_string(), value: 0},
-            f: FlagsRegister { value: 0},
-            b: DefaultRegister {name: "b".to_string(), value: 0},
-            c: DefaultRegister {name: "c".to_string(), value: 0},
-            d: DefaultRegister {name: "d".to_string(), value: 0},
-            e: DefaultRegister {name: "e".to_string(), value: 0},
-            h: DefaultRegister {name: "h".to_string(), value: 0},
-            l: DefaultRegister {name: "l".to_string(), value: 0},
-            a_: Accumulator { name: "a'".to_string(), value: 0},
-            f_: FlagsRegister { value: 0},
-            b_: DefaultRegister {name: "b'".to_string(), value: 0},
-            c_: DefaultRegister {name: "c'".to_string(), value: 0},
-            d_: DefaultRegister {name: "d'".to_string(), value: 0},
-            e_: DefaultRegister {name: "e'".to_string(), value: 0},
-            h_: DefaultRegister {name: "h'".to_string(), value: 0},
-            l_: DefaultRegister {name: "l'".to_string(), value: 0},
-            i: DefaultRegister {name: "i".to_string(), value: 0},
-            x: DefaultRegister {name: "x".to_string(), value: 0},
-            pc: ProgramCounter { value: 0 }, // PC normally begins at start of memory
+            a: DefaultRegister::new("a"),
+            f: FlagsRegister::new(),
+            b: DefaultRegister::new("b"),
+            c: DefaultRegister::new("c"),
+            d: DefaultRegister::new("d"),
+            e: DefaultRegister::new("e"),
+            h: DefaultRegister::new("h"),
+            l: DefaultRegister::new("l"),
+            a_: DefaultRegister::new("a'"),
+            f_: FlagsRegister::new(),
+            b_: DefaultRegister::new("b'"),
+            c_: DefaultRegister::new("c'"),
+            d_: DefaultRegister::new("d'"),
+            e_: DefaultRegister::new("e'"),
+            h_: DefaultRegister::new("h'"),
+            l_: DefaultRegister::new("l'"),
+            ixh: DefaultRegister::new("ixh"),
+            ixl: DefaultRegister::new("ixl"),
+            iyh: DefaultRegister::new("iyh"),
+            iyl: DefaultRegister::new("iyl"),
+            i: DefaultRegister::new("i"),
+            r: DefaultRegister::new("r"),
+            pc: ProgramCounter::new(), // PC normally begins at start of memory
             sp: StackPointer { location: 0xFFFF }, // SP normally begins at the end of memory and moves down.
             iff1: false,
             iff2: false,
-            interrupt_mode: 0
+            interrupt_mode: 0,
+            halted: false,
+            ei_delay: false
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{instruction_set::{Instruction, InstructionSet}, runtime::RuntimeComponents};
+    use super::{Memory, StackPointer, Registers, R16};
 
-    use super::{Memory, Registers, AddressBus, DataBus, StackPointer};
-
-    fn runtime_components() -> RuntimeComponents {
-        RuntimeComponents { mem: Memory::default(), registers: Registers::default(), address_bus: AddressBus { value: 0 }, data_bus: DataBus { } }
-    }
-    
     #[test]
     fn test_stack_pointer() {
         let mut sp = StackPointer { location: 0x100 };
@@ -607,4 +467,91 @@ mod tests {
         assert!(sp.location == 0x100);
     }
 
+    #[test]
+    fn test_read16_write16() {
+        let mut mem = Memory::default();
+        mem.write16(0x8000, 0x1234);
+        assert!(mem.read(0x8000) == 0x34);
+        assert!(mem.read(0x8001) == 0x12);
+        assert!(mem.read16(0x8000) == 0x1234);
+    }
+
+    #[test]
+    fn test_memory_wraps_at_ffff() {
+        let mut mem = Memory::default();
+        mem.write(0xFFFF, 0x42);
+        assert!(mem.read(0xFFFF) == 0x42);
+        mem.write16(0xFFFF, 0xABCD);
+        assert!(mem.read(0xFFFF) == 0xCD);
+        assert!(mem.read(0x0000) == 0xAB);
+    }
+
+    #[test]
+    fn test_get_set16() {
+        let mut regs = Registers::default();
+        regs.set16(R16::IX, 0xBEEF);
+        assert!(regs.get16(R16::IX) == 0xBEEF);
+        regs.set16(R16::AF, 0x0142);
+        assert!(regs.a.get() == 0x01);
+        assert!(regs.f.get() == 0x42);
+        assert!(regs.get16(R16::AF) == 0x0142);
+    }
+
+    #[test]
+    fn test_ram_configuration_mapping() {
+        let mut mem = Memory::default();
+        // Config 0: write distinct markers into all four regions of bank 0
+        mem.write(0x0000, 0xA1);
+        mem.write(0x4000, 0xA2);
+        mem.write(0x8000, 0xA3);
+        mem.write(0xC000, 0xA4);
+
+        // Config 2 maps all four regions to blocks 4-7 (expansion bank)
+        mem.set_ram_config(2);
+        assert_eq!(mem.read(0x0000), 0x01, "expansion bank starts at default fill");
+        mem.write(0x4000, 0xB2);
+        mem.write(0xC000, 0xB4);
+
+        // Back to config 0: original data intact, expansion writes invisible
+        mem.set_ram_config(0);
+        assert_eq!(mem.read(0x0000), 0xA1);
+        assert_eq!(mem.read(0x4000), 0xA2);
+        assert_eq!(mem.read(0x8000), 0xA3);
+        assert_eq!(mem.read(0xC000), 0xA4);
+
+        // Config 1: region 3 -> block 7 (the shadow-screen mapping)
+        mem.set_ram_config(1);
+        assert_eq!(mem.read(0x0000), 0xA1, "regions 0-2 unchanged in config 1");
+        assert_eq!(mem.read(0x4000), 0xA2);
+        assert_eq!(mem.read(0x8000), 0xA3);
+        assert_eq!(mem.read(0xC000), 0xB4, "region 3 maps to block 7 (written under config 2)");
+    }
+
+    #[test]
+    fn test_rom_banking() {
+        let mut mem = Memory::default();
+        let os_rom = [0xAA; 0x4000];
+        let expansion_rom = [0xBB; 0x4000];
+        mem.load_os_rom(&os_rom);
+        mem.load_expansion_rom(&expansion_rom);
+
+        // After load_os_rom the lower ROM is enabled: reads hit ROM even over written RAM
+        mem.write(0x0000, 0x42);
+        assert!(mem.read(0x0000) == 0xAA, "lower ROM should shadow RAM");
+        // Upper ROM present: reads at 0xC000+ hit the expansion ROM
+        mem.write(0xC000, 0x42);
+        assert!(mem.read(0xC000) == 0xBB, "upper ROM should shadow RAM");
+
+        // Writes always go to RAM; disabling banking reveals it
+        mem.lower_rom_enabled = false;
+        assert!(mem.read(0x0000) == 0x42, "RAM write should survive under ROM");
+        mem.upper_rom_enabled = false;
+        assert!(mem.read(0xC000) == 0x42, "RAM write should survive under ROM");
+
+        // With no expansion ROM loaded, upper reads always hit RAM
+        let mut mem16 = Memory::default();
+        mem16.load_os_rom(&os_rom);
+        mem16.write(0xC000, 0x77);
+        assert!(mem16.read(0xC000) == 0x77);
+    }
 }
