@@ -124,17 +124,25 @@ impl Crtc {
         flag
     }
 
-    /// The visible screen start address, from registers 12/13.
+    /// The video origin, split the way the hardware wires it: the 16K video
+    /// page (A15-A14, from R12 bits 5-4) and the word offset within it
+    /// (A10-A1, from R12 bits 1-0 + R13).
     ///
-    /// Per the CPC video address mapping: A15 = MA13, A14 = MA12 (the 16K
-    /// video page, R12 bits 5-4), A10-A1 = MA9-MA0 (the word offset within
-    /// the page, R12 bits 1-0 + R13), A13-A11 = the raster line (RA2-RA0,
-    /// applied by the renderer's row stride), A0 = 0 (driven by the gate
-    /// array). MA10/MA11 are not connected on the CPC.
-    pub fn start_address(&self) -> u16 {
-        let page = ((self.registers[12] as u16) >> 4) & 0x03;
+    /// Per the CPC video address mapping: A15 = MA13, A14 = MA12, A13-A11 =
+    /// the raster line (RA2-RA0), A10-A1 = MA9-MA0, A0 = the byte within
+    /// the word (driven by the gate array). MA10/MA11 (R12 bits 3-2) are
+    /// not connected on the CPC, so the word offset wraps at 1024 words
+    /// (2KB per raster block) instead of addressing further memory.
+    pub fn video_origin(&self) -> (u16, u16) {
+        let page = (((self.registers[12] as u16) >> 4) & 0x03) << 14;
         let offset = (((self.registers[12] as u16) & 0x03) << 8) | self.registers[13] as u16;
-        (page << 14) | (offset << 1)
+        (page, offset)
+    }
+
+    /// The visible screen start address, from registers 12/13.
+    pub fn start_address(&self) -> u16 {
+        let (page, offset) = self.video_origin();
+        page | (offset << 1)
     }
 
     /// Handles a write to the CRTC data port (0xBDxx).

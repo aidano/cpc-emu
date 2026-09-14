@@ -1,8 +1,16 @@
 // Renders CPC video memory into a Frame, honouring the gate array mode and palette.
 //
-// Screen memory layout (base 0xC000):
+// With the default base 0xC000 the screen memory layout is:
 //   address = base + (y / 8) * stride + (y % 8) * 0x800 + (x / pixels_per_byte)
 // Consecutive scanlines within a character row are 0x800 bytes apart.
+//
+// Addresses are built the way the hardware wires them (see
+// Crtc::video_origin): A15-A14 select the 16K video page, A13-A11 the raster
+// line within the character row, A10-A1 a 10-bit word offset and A0 the byte
+// within the word. MA10/MA11 are not connected, so the word offset wraps at
+// 1024 words: a hardware-scrolled screen (the firmware scrolls text by
+// stepping R12/R13) wraps within each 2KB raster block rather than running
+// past the end of the address space.
 
 use crate::memory::Memory;
 use super::{Frame, GateArray};
@@ -27,11 +35,6 @@ fn mode_stride(mode: u8) -> u16 {
     }
 }
 
-/// The visible screen start address, from the CRTC start address registers.
-fn screen_base(crtc: &Crtc) -> u16 {
-    crtc.start_address()
-}
-
 /// Pen colour lookup: in modes 0/1 the pixel bits index pens directly.
 /// In mode 2 only pens 0 (paper) and 1 (ink) are visible.
 fn pen_color(ga: &GateArray, pen: usize) -> (u8, u8, u8) {
@@ -40,16 +43,21 @@ fn pen_color(ga: &GateArray, pen: usize) -> (u8, u8, u8) {
 
 pub fn render(mem: &Memory, ga: &GateArray, crtc: &Crtc) -> Frame {
     let (width, height, pixels_per_byte) = mode_dimensions(ga.mode);
-    let stride = mode_stride(ga.mode);
-    let base = screen_base(crtc);
+    // One character row of screen data is 80 bytes = 40 CRTC words in every
+    // mode; consecutive scanlines of the row sit 0x800 apart (raster bits).
+    let row_words = mode_stride(ga.mode) / 2;
+    let (page, offset) = crtc.video_origin();
     let mut frame = Frame::new(width, height);
 
     for y in 0..height {
-        let row_base = base
-            + ((y / 8) as u16) * stride
-            + ((y % 8) as u16) * 0x800;
+        let row = y / 8;
+        let scanline = y % 8;
+        let row_word = (offset + row * row_words) & 0x3FF;
+        let raster_base = page | (scanline << 11);
         for x in 0..width {
-            let byte = mem.read(row_base + x / pixels_per_byte);
+            let byte_index = x / pixels_per_byte;
+            let word = (row_word + byte_index / 2) & 0x3FF;
+            let byte = mem.read(raster_base | (word << 1) | (byte_index & 1));
             let color = match ga.mode {
                 0 => {
                     // 4 bits per pixel, scrambled: pixel 0 = bits 7,6,3,2; pixel 1 = bits 5,4,1,0
@@ -168,6 +176,53 @@ mod tests {
         assert_eq!((frame.width, frame.height), (160, 200));
         assert_eq!(frame.pixel(0, 0), (255, 0x00, 0x00)); // pen 9
         assert_eq!(frame.pixel(1, 0), (0x00, 0xFF, 0x00)); // pen 6
+    }
+
+    #[test]
+    fn test_scrolled_screen_renders_from_offset() {
+        // One firmware text scroll steps the base by one character row:
+        // R12/R13 = 0x30/0x28 -> word offset 0x28 -> byte base 0xC050.
+        let (mut mem, mut ga, mut crtc) = setup();
+        ga.mode = 2;
+        ga.pens[1] = 0x12;
+        crtc.registers[12] = 0x30;
+        crtc.registers[13] = 0x28;
+        for x_byte in 0..0x50 {
+            mem.write(0xC050 + x_byte, 0xFF);
+        }
+        let frame = render(&mem, &ga, &crtc);
+        assert_eq!(frame.pixel(0, 0), (0x00, 0xFF, 0x00));
+        // Row 1 renders from the scrolled base 0xC0A0, not from 0xC000.
+        assert_eq!(frame.pixel(0, 8), (0x00, 0x00, 0x00));
+    }
+
+    #[test]
+    fn test_word_offset_wraps_within_2k_blocks() {
+        // R12/R13 = 0x33/0xE0 -> word offset 0x3E0: row 0 starts 0x7C0 bytes
+        // in and its last 16 bytes wrap to the start of the 2KB raster block.
+        // (Under the old byte-arithmetic this base overflowed u16 on the
+        // lower rows.)
+        let (mut mem, mut ga, mut crtc) = setup();
+        ga.mode = 2;
+        ga.pens[1] = 0x12;
+        crtc.registers[12] = 0x33;
+        crtc.registers[13] = 0xE0;
+        // Words 0x3E0..0x3FF of row 0 live at 0xC7C0-0xC7FF; zero them so
+        // only the wrapped part is ink.
+        for x_byte in 0..0x40 {
+            mem.write(0xC7C0 + x_byte, 0x00);
+        }
+        // Word 0x400 wraps to word 0: bytes 64.. of row 0 come from 0xC000.
+        for x_byte in 0..0x10 {
+            mem.write(0xC000 + x_byte, 0xFF);
+        }
+        let frame = render(&mem, &ga, &crtc);
+        assert_eq!(frame.pixel(496, 0), (0x00, 0x00, 0x00)); // word 0x3FF: not yet wrapped
+        assert_eq!(frame.pixel(512, 0), (0x00, 0xFF, 0x00)); // word 0x400 -> 0xC000
+        // Row 1's word base 0x408 wraps too: its first bytes come from 0xC010.
+        mem.write(0xC010, 0xFF);
+        let frame = render(&mem, &ga, &crtc);
+        assert_eq!(frame.pixel(0, 8), (0x00, 0xFF, 0x00));
     }
 
     #[test]
