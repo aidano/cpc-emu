@@ -22,7 +22,7 @@ fn decode_screen_text(mem: &cpc_emu::memory::Memory, rom: &[u8]) -> Vec<String> 
                 for n in 0..8usize {
                     let byte = if n < 4 { b0 } else { b1 };
                     let in_pixel = n % 4;
-                    let pen = ((byte >> (7 - in_pixel)) & 1) << 1 | ((byte >> (3 - in_pixel)) & 1);
+                    let pen = (((byte >> (3 - in_pixel)) & 1) << 1) | ((byte >> (7 - in_pixel)) & 1);
                     if pen != 0 {
                         bits |= 0x80 >> n;
                     }

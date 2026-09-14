@@ -60,19 +60,22 @@ pub fn render(mem: &Memory, ga: &GateArray, crtc: &Crtc) -> Frame {
             let byte = mem.read(raster_base | (word << 1) | (byte_index & 1));
             let color = match ga.mode {
                 0 => {
-                    // 4 bits per pixel, scrambled: pixel 0 = bits 7,6,3,2; pixel 1 = bits 5,4,1,0
+                    // 4 bits per pixel, scrambled (see the Gate Array packing
+                    // table): pixel 0 = bits 7,5,3,1 with pen weights 1,4,2,8;
+                    // pixel 1 = bits 6,4,2,0 with the same weights.
                     let in_pixel = (x % 2) as u8;
                     let pen = if in_pixel == 0 {
-                        ((byte >> 7) & 1) << 3 | ((byte >> 6) & 1) << 2 | ((byte >> 3) & 1) << 1 | ((byte >> 2) & 1)
+                        ((byte >> 7) & 1) | (((byte >> 5) & 1) << 2) | (((byte >> 3) & 1) << 1) | (((byte >> 1) & 1) << 3)
                     } else {
-                        ((byte >> 5) & 1) << 3 | ((byte >> 4) & 1) << 2 | ((byte >> 1) & 1) << 1 | (byte & 1)
+                        ((byte >> 6) & 1) | (((byte >> 4) & 1) << 2) | (((byte >> 2) & 1) << 1) | ((byte & 1) << 3)
                     };
                     pen_color(ga, pen as usize)
                 }
                 1 => {
-                    // 2 bits per pixel, scrambled: pixel n uses bits (7-n) and (3-n)
+                    // 2 bits per pixel, scrambled: pixel n takes bit (3-n) as
+                    // pen bit 1 (weight 2) and bit (7-n) as pen bit 0 (weight 1).
                     let in_pixel = (x % 4) as u8;
-                    let pen = (((byte >> (7 - in_pixel)) & 1) << 1) | ((byte >> (3 - in_pixel)) & 1);
+                    let pen = (((byte >> (3 - in_pixel)) & 1) << 1) | ((byte >> (7 - in_pixel)) & 1);
                     pen_color(ga, pen as usize)
                 }
                 _ => {
@@ -154,12 +157,12 @@ mod tests {
         ga.pens[1] = 0x04; // royal blue
         ga.pens[2] = 0x12; // bright green
         ga.pens[3] = 0x0C; // bright red
-        // Byte: pixel0 = bits (7,3) = (0,1) -> pen 1; pixel1 = (6,2) = (1,0) -> pen 2;
-        //       pixel2 = (5,1) = (1,1) -> pen 3; pixel3 = (4,0) = (0,0) -> pen 0
+        // Byte: pixel0 = bits (3,7) = (1,0) -> pen 2; pixel1 = (2,6) = (0,1) -> pen 1;
+        //       pixel2 = (1,5) = (1,1) -> pen 3; pixel3 = (0,4) = (0,0) -> pen 0
         mem.write(0xC000, 0b0110_1010);
         let frame = render(&mem, &ga, &crtc);
-        assert_eq!(frame.pixel(0, 0), (0x00, 0x00, 127)); // pen 1 blue
-        assert_eq!(frame.pixel(1, 0), (0x00, 255, 0x00)); // pen 2 bright green
+        assert_eq!(frame.pixel(0, 0), (0x00, 255, 0x00)); // pen 2 bright green
+        assert_eq!(frame.pixel(1, 0), (0x00, 0x00, 127)); // pen 1 blue
         assert_eq!(frame.pixel(2, 0), (255, 0x00, 0x00)); // pen 3 bright red
         assert_eq!(frame.pixel(3, 0), (0x00, 0x00, 0x00)); // pen 0 black
     }
@@ -170,7 +173,7 @@ mod tests {
         ga.mode = 0;
         ga.pens[9] = 0x0C; // bright red
         ga.pens[6] = 0x12; // bright green
-        // Byte: pixel0 = bits 7,6,3,2 = (1,0,0,1) -> pen 9; pixel1 = bits 5,4,1,0 = (0,1,1,0) -> pen 6
+        // Byte: pixel0 = bits (7,5,3,1) = (1,0,0,1) -> 1+8 = pen 9; pixel1 = bits (6,4,2,0) = (0,1,1,0) -> 4+2 = pen 6
         mem.write(0xC000, 0b1001_0110);
         let frame = render(&mem, &ga, &crtc);
         assert_eq!((frame.width, frame.height), (160, 200));
