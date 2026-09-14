@@ -207,7 +207,10 @@ impl Runtime {
 
         let hl = self.components.registers.get16(crate::memory::R16::HL);
         let bc = self.components.registers.get16(crate::memory::R16::BC);
-        debug!("{:0>8X} {:0>4X}\t{: <14}\t{: <20}\t({} cycles)\tHL:{:04X} BC:{:04X}", self.components.mem.diagnostics_step, pc_before, machine_code, assembly, cycles, hl, bc);
+        let de = self.components.registers.get16(crate::memory::R16::DE);
+        let iy = self.components.registers.get16(crate::memory::R16::IY);
+        let af = self.components.registers.get16(crate::memory::R16::AF);
+        debug!("{:0>8X} {:0>4X}\t{: <14}\t{: <20}\t({} cycles)\tAF:{:04X} HL:{:04X} DE:{:04X} BC:{:04X} IY:{:04X} SP:{:04X}", self.components.mem.diagnostics_step, pc_before, machine_code, assembly, cycles, af, hl, de, bc, iy, self.components.registers.sp.get());
         cycles
     }
 
@@ -660,6 +663,32 @@ mod tests {
         assert_eq!(rt.components.gate_array.mode, 2);
         assert!(!rt.components.mem.lower_rom_enabled);
         assert!(!rt.components.mem.upper_rom_enabled);
+    }
+
+    #[test]
+    fn test_fdc_ports_leave_the_ppi_untouched() {
+        let mut rt = runtime();
+        // The PPI latches as the firmware leaves them after init: control
+        // 0x92 (port A input, port C output), a keyboard line selected in
+        // port C.
+        rt.components.ppi.control = 0x92;
+        rt.components.ppi.port_c = 0x44;
+        rt.components.ppi.keyboard_line = 0x44;
+        // The disc interface ports (0xFAxx/0xFBxx) must decode apart from
+        // the PPI (0xF4xx-0xF7xx): motor, data-register and status accesses
+        // during AMSDOS's init must not write the PPI or the PSG behind it.
+        rt.components.port_out(0xFA7E, 0x01);
+        rt.components.port_out(0xFB7F, 0xFF);
+        rt.components.port_out(0xFB7F, 0x46);
+        let _status = rt.components.port_in(0xFB7E);
+        assert_eq!(rt.components.ppi.control, 0x92);
+        assert_eq!(rt.components.ppi.port_c, 0x44);
+        assert_eq!(rt.components.ppi.keyboard_line, 0x44);
+        assert!(rt.components.fdc.motor, "the motor latch write must reach the FDC");
+        // The real PPI range still works normally.
+        rt.components.port_out(0xF610, 0x40);
+        assert_eq!(rt.components.ppi.port_c, 0x40);
+        assert_eq!(rt.components.ppi.keyboard_line, 0x40);
     }
 
     #[test]

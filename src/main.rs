@@ -9,6 +9,7 @@ use std::io;
 use std::io::Read;
 use std::io::BufReader;
 use std::fs::File;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
@@ -33,6 +34,11 @@ struct Arguments {
     #[clap(short = 'e', long = "exprom")]
     exproms: Vec<String>,
 
+    /// Boot without the automatic AMSDOS fit (a tape-only disc machine, or
+    /// when fitting a disc ROM explicitly with -e)
+    #[clap(long)]
+    no_amsdos: bool,
+
     /// Display backend: "slint" (window) or "terminal"
     #[clap(long, default_value = "slint")]
     display: String,
@@ -44,6 +50,41 @@ struct Arguments {
 
 /// 50 frames per second at 4MHz: the cycles executed per display frame.
 const CYCLES_PER_FRAME: u32 = 80_000;
+
+/// The 664/6128 OS ROMs are (c) 1985; the 464's is (c) 1984 and that machine
+/// has no internal disc interface. Used to decide whether a loaded OS+BASIC
+/// pair is a disc-machine image that deserves the automatic AMSDOS fit.
+const DISC_MACHINE_OS_MARKER: &[u8] = b"1985 Amstrad";
+
+/// Returns the AMSDOS image to auto-fit when the main ROM is a 664/6128-class
+/// OS+BASIC pair (32K whose OS half carries the (c) 1985 marker) and an
+/// `amsdos.rom` image sits in the same directory: the real machines carry
+/// AMSDOS as a third, separate ROM in upper ROM socket 7.
+fn bundled_amsdos(main_rom: &[u8], main_rom_path: &str) -> Option<(Vec<u8>, PathBuf)> {
+    if main_rom.len() != 0x8000 {
+        return None;
+    }
+    if !main_rom[..0x4000]
+        .windows(DISC_MACHINE_OS_MARKER.len())
+        .any(|window| window == DISC_MACHINE_OS_MARKER)
+    {
+        return None;
+    }
+    let path = Path::new(main_rom_path)
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .join("amsdos.rom");
+    let bytes = std::fs::read(&path).ok()?;
+    if bytes.len() != 0x4000 {
+        error!(
+            "{}: expected a 16K AMSDOS image, got {} bytes; not auto-fitting",
+            path.display(),
+            bytes.len()
+        );
+        return None;
+    }
+    Some((bytes, path))
+}
 
 fn run_terminal(mut runtime: Runtime, scale: video::terminal::TerminalScale) {
     let mut sink = video::terminal::TerminalSink::new(scale);
@@ -117,6 +158,26 @@ fn main() -> io::Result<()> {
         },
         Err(code) =>  {
             error!("Error reading rom: {:?}", code);
+        }
+    }
+
+    // The 6128's AMSDOS is not part of the OS+BASIC pair in the main ROM
+    // image: the real machine carries it as a third, separate ROM in upper
+    // ROM socket 7. Fit it automatically so a disc machine boots
+    // disc-enabled like the hardware; an explicit -e ROM into slot 7 below
+    // still overrides, and --no-amsdos skips this entirely.
+    if !args.no_amsdos {
+        match bundled_amsdos(&buffer, rom_file_name) {
+            Some((bytes, path)) => {
+                let mut rom = [0u8; 0x4000];
+                rom.copy_from_slice(&bytes);
+                runtime.load_expansion_rom_into_slot(&rom, 7);
+                debug!(
+                    "auto-fitted {} into upper ROM slot 7 (the 6128's internal disc interface)",
+                    path.display()
+                );
+            },
+            None => debug!("no amsdos.rom found beside {}; booting without AMSDOS", rom_file_name),
         }
     }
 

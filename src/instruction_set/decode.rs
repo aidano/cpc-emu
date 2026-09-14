@@ -77,6 +77,25 @@ fn map_r8(code: u8, index: Option<R16>) -> R8 {
     }
 }
 
+/// Maps an r-table code (0-7) to a register for the (INDEX±d) memory operand
+/// forms. Codes 4/5 stay H/L here even in index mode: `DD 6E nn` is
+/// `LD L,(IX+nn)` (not `LD IXL,(IX+nn)`); the IXH/IXL mapping in map_r8
+/// applies only to the register/register and immediate forms (`DD 24`,
+/// `DD 6C`, ...).
+fn map_r8_mem(code: u8) -> R8 {
+    match code {
+        0 => R8::B,
+        1 => R8::C,
+        2 => R8::D,
+        3 => R8::E,
+        4 => R8::H,
+        5 => R8::L,
+        6 => unreachable!("(HL) code 6 must be handled before map_r8_mem"),
+        7 => R8::A,
+        _ => unreachable!(),
+    }
+}
+
 /// Maps a dd-table code (0-3) to a 16-bit pair. In index mode, code 2 is the
 /// index register instead of HL.
 fn map_r16(code: u8, index: Option<R16>) -> R16 {
@@ -184,11 +203,11 @@ fn decode_base(d: &mut Decoder, opcode: u8, index: Option<R16>) -> Op {
                 (true, true) => Op::LdR8R8(map_r8(dst_code, index), map_r8(src_code, index)),
                 (true, false) => match index {
                     None => Op::LdR8FromPtr(map_r8(dst_code, index), R16::HL),
-                    Some(_) => Op::LdR8FromIndexD(map_r8(dst_code, index), idx, d.fetch_i8()),
+                    Some(_) => Op::LdR8FromIndexD(map_r8_mem(dst_code), idx, d.fetch_i8()),
                 },
                 (false, true) => match index {
                     None => Op::LdPtrFromR8(R16::HL, map_r8(src_code, index)),
-                    Some(_) => Op::LdIndexDFromR8(idx, d.fetch_i8(), map_r8(src_code, index)),
+                    Some(_) => Op::LdIndexDFromR8(idx, d.fetch_i8(), map_r8_mem(src_code)),
                 },
                 (false, false) => unreachable!(),
             }
@@ -385,6 +404,23 @@ mod tests {
         assert_eq!(decode_bytes(&[0xDD, 0x7C]), Op::LdR8R8(R8::A, R8::IXH));
         assert_eq!(decode_bytes(&[0xDD, 0x34, 0x02]), Op::IncIndexD(R16::IX, 0x02));
         assert_eq!(decode_bytes(&[0xDD, 0x36, 0x02, 0x77]), Op::LdIndexDFromN(R16::IX, 0x02, 0x77));
+    }
+
+    #[test]
+    fn test_decode_index_register_loads_use_h_l_not_index_halves() {
+        // DD 6E / DD 66 (and FD variants) load H/L from (Ix+d); the IXH/IXL
+        // mapping applies only to the register-register forms (DD 2C etc.).
+        // A former decode bug turned `FD 6E 06` into LD IYL,(IY+06), breaking
+        // the AMSDOS interrupt handler's `LD SP,HL` stack restore.
+        assert_eq!(decode_bytes(&[0xFD, 0x6E, 0x06]), Op::LdR8FromIndexD(R8::L, R16::IY, 0x06));
+        assert_eq!(decode_bytes(&[0xFD, 0x66, 0x07]), Op::LdR8FromIndexD(R8::H, R16::IY, 0x07));
+        assert_eq!(decode_bytes(&[0xDD, 0x6E, 0x02]), Op::LdR8FromIndexD(R8::L, R16::IX, 0x02));
+        assert_eq!(decode_bytes(&[0xDD, 0x66, 0x02]), Op::LdR8FromIndexD(R8::H, R16::IX, 0x02));
+        assert_eq!(decode_bytes(&[0xDD, 0x74, 0x02]), Op::LdIndexDFromR8(R16::IX, 0x02, R8::H));
+        assert_eq!(decode_bytes(&[0xDD, 0x75, 0x02]), Op::LdIndexDFromR8(R16::IX, 0x02, R8::L));
+        // The register-register forms still use the index halves.
+        assert_eq!(decode_bytes(&[0xFD, 0x2C]), Op::IncR8(R8::IYL));
+        assert_eq!(decode_bytes(&[0xFD, 0x6D]), Op::LdR8R8(R8::IYL, R8::IYL));
     }
 
     #[test]

@@ -29,6 +29,9 @@ pub fn execute(op: &Op, components: &mut RuntimeComponents) -> u32 {
         Op::Ei => {
             components.registers.iff1 = true;
             components.registers.iff2 = true;
+            // The interrupt is delayed until the instruction following EI has
+            // completed (the runtime clears the flag after the next step).
+            components.registers.ei_delay = true;
             4
         }
 

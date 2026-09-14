@@ -81,8 +81,10 @@ impl Memory {
 
     /// Records the upper ROM selection. With only BASIC fitted, every slot
     /// resolves to the BASIC image, so this is bookkeeping only.
+    /// The hardware latch holds a 4-bit ROM number (16 slots, mirrored at the
+    /// partial decode); guard reads against out-of-range values.
     pub fn set_upper_rom_number(&mut self, number: u8) {
-        self.upper_rom_number = number;
+        self.upper_rom_number = number & 0x0F;
     }
 
 
