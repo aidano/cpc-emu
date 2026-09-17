@@ -4,12 +4,15 @@ use cpc_emu::dsk::Dsk;
 use cpc_emu::runtime::*;
 use cpc_emu::video;
 use cpc_emu::video::VideoSink;
+use cpc_emu::audio;
 
 use std::io;
 use std::io::Read;
 use std::io::BufReader;
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -46,10 +49,11 @@ struct Arguments {
     /// Terminal scaling mode: "full" (1 pixel per cell), "half" (2x1) or "braille" (2x4)
     #[clap(long, default_value = "braille")]
     terminal_scale: String,
-}
 
-/// 50 frames per second at 4MHz: the cycles executed per display frame.
-const CYCLES_PER_FRAME: u32 = 80_000;
+    /// Disable audio output
+    #[clap(long)]
+    mute: bool,
+}
 
 /// The 664/6128 OS ROMs are (c) 1985; the 464's is (c) 1984 and that machine
 /// has no internal disc interface. Used to decide whether a loaded OS+BASIC
@@ -86,24 +90,49 @@ fn bundled_amsdos(main_rom: &[u8], main_rom_path: &str) -> Option<(Vec<u8>, Path
     Some((bytes, path))
 }
 
-fn run_terminal(mut runtime: Runtime, scale: video::terminal::TerminalScale) {
+fn run_terminal(
+    runtime: Runtime,
+    scale: video::terminal::TerminalScale,
+    _audio: Option<audio::AudioOutput>,
+) {
+    // The emulation runs in its own thread; this loop only presents frames.
+    let mailbox = Arc::new(cpc_emu::host::FrameMailbox::new(640, 400));
+    // Terminal mode has no keyboard input path: the sender is dropped and
+    // the emulation thread just sees a closed channel.
+    let (_tx, rx) = mpsc::channel::<(String, i32)>();
+    let _emu = cpc_emu::host::spawn_emu_thread(runtime, Arc::clone(&mailbox), rx);
     let mut sink = video::terminal::TerminalSink::new(scale);
-    let frame_duration = Duration::from_millis(20); // 50Hz
+    let mut display = video::Frame::new(640, 400);
     loop {
-        let frame_start = std::time::Instant::now();
-        runtime.run_for_cycles(CYCLES_PER_FRAME);
-        let frame = video::renderer::render(&runtime.components.mem, &runtime.components.gate_array, &runtime.components.crtc);
-        sink.present(&frame);
-        let elapsed = frame_start.elapsed();
-        if elapsed < frame_duration {
-            thread::sleep(frame_duration - elapsed);
+        if mailbox.read_latest(&mut display) {
+            sink.present(&display);
         }
+        thread::sleep(Duration::from_millis(20));
     }
 }
 
 #[cfg(feature = "gui")]
-fn run_slint(runtime: Runtime) -> Result<(), slint::PlatformError> {
-    video::slint_backend::run(runtime)
+fn run_slint(runtime: Runtime, audio_out: Option<audio::AudioOutput>) -> Result<(), slint::PlatformError> {
+    video::slint_backend::run(runtime, audio_out)
+}
+
+/// Starts the live audio output unless muted; the PSG renders at whatever
+/// rate the device reports. A missing device logs a warning and the
+/// emulator runs silent.
+fn setup_audio(runtime: &mut Runtime, mute: bool) -> Option<audio::AudioOutput> {
+    if mute {
+        debug!("audio muted");
+        return None;
+    }
+    let (producer, consumer) = audio::audio_ring();
+    match audio::start(consumer) {
+        Some((output, rate)) => {
+            runtime.components.psg.sample_rate = rate;
+            runtime.audio = Some(producer);
+            Some(output)
+        }
+        None => None,
+    }
 }
 
 fn main() -> io::Result<()> {
@@ -208,6 +237,10 @@ fn main() -> io::Result<()> {
         }
     }
 
+    // Live audio: the output handle must outlive the run loop, so it stays
+    // with the caller of the selected backend.
+    let audio_out = setup_audio(&mut runtime, args.mute);
+
     match args.display.as_str() {
         "terminal" => {
             let scale = video::terminal::TerminalScale::from_str(&args.terminal_scale)
@@ -215,11 +248,11 @@ fn main() -> io::Result<()> {
                     error!("Unknown terminal scale '{}', using braille", args.terminal_scale);
                     video::terminal::TerminalScale::Braille
                 });
-            run_terminal(runtime, scale);
+            run_terminal(runtime, scale, audio_out);
         }
         #[cfg(feature = "gui")]
         "slint" => {
-            run_slint(runtime).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            run_slint(runtime, audio_out).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
         }
         _ => {
             if args.display == "slint" {

@@ -10,10 +10,12 @@ clap = { version = "3.1.6", features = ["derive"] }
 env_logger = "0.10.0"
 log = "0.4.17"
 slint = { version = "1", optional = true }
+cpal = { version = "0.15", optional = true }
 
 [features]
-default = ["gui"]
+default = ["gui", "audio"]
 gui = ["dep:slint"]
+audio = ["dep:cpal"]
 
 [build-dependencies]
 slint-build = "1"

@@ -39,12 +39,16 @@ impl Frame {
         (self.rgba[index], self.rgba[index + 1], self.rgba[index + 2])
     }
 
-    /// Nearest-neighbour scale by integer horizontal/vertical factors. Used to
-    /// present all modes at the same display footprint with the correct pixel
-    /// aspect ratio: mode 0 pixels are twice as wide as tall, mode 1 square,
-    /// mode 2 twice as tall as wide.
-    pub fn scaled(&self, x_scale: u16, y_scale: u16) -> Frame {
-        let mut out = Frame::new(self.width * x_scale, self.height * y_scale);
+    /// Nearest-neighbour scale by integer horizontal/vertical factors, into
+    /// `out` (reallocated only when its size changes). Used to present all
+    /// modes at the same display footprint with the correct pixel aspect
+    /// ratio: mode 0 pixels are twice as wide as tall, mode 1 square, mode 2
+    /// twice as tall as wide.
+    pub fn scaled_into(&self, x_scale: u16, y_scale: u16, out: &mut Frame) {
+        let (width, height) = (self.width * x_scale, self.height * y_scale);
+        if out.width != width || out.height != height {
+            *out = Frame::new(width, height);
+        }
         for y in 0..self.height {
             for x in 0..self.width {
                 let color = self.pixel(x, y);
@@ -55,6 +59,15 @@ impl Frame {
                 }
             }
         }
+    }
+
+    /// Nearest-neighbour scale by integer horizontal/vertical factors. Used to
+    /// present all modes at the same display footprint with the correct pixel
+    /// aspect ratio: mode 0 pixels are twice as wide as tall, mode 1 square,
+    /// mode 2 twice as tall as wide.
+    pub fn scaled(&self, x_scale: u16, y_scale: u16) -> Frame {
+        let mut out = Frame::new(1, 1);
+        self.scaled_into(x_scale, y_scale, &mut out);
         out
     }
 }

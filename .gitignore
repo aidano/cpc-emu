@@ -3,4 +3,5 @@ dsk_files/
 roms/
 dsk/
 references/
+.opencode/plans
 .DS_Store

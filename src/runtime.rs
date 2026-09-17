@@ -10,6 +10,7 @@ use std::time::{self, SystemTime};
 use crate::memory::{Memory, Registers, AddressBus, DataBus};
 use crate::instruction_set::{self, Op};
 use crate::video::GateArray;
+use crate::audio::AudioProducer;
 use crate::dsk::Dsk;
 use crate::devices::{crtc::Crtc, fdc::Fdc, keyboard::Keyboard, ppi::Ppi, psg::Psg};
 
@@ -19,6 +20,21 @@ use log::{debug, error};
 /// 64 characters of 4 T-cycles (256 T-cycles) on the CPC.
 pub const LINE_T: u32 = 256;
 pub const IRQ_PERIOD: u32 = 52 * LINE_T;
+
+/// The gate array raises its interrupt every 52 HSYNC edges; counted in
+/// scanlines so the counter and the VSYNC+2 reset share one clock.
+pub const IRQ_LINES: u32 = 52;
+
+/// The machine (Z80, PSG, CRTC) runs at 4MHz: 250ns per T-cycle.
+pub const Z80_CLOCK_HZ: u64 = 4_000_000;
+
+/// 50 frames per second at 4MHz: the T-cycles executed per display frame.
+pub const CYCLES_PER_FRAME: u32 = 80_000;
+
+/// Audio renders in slices of this many machine cycles (~5ms at 4MHz): PSG
+/// register writes reach the audio promptly, and each push to the output
+/// ring stays small and smooth.
+const AUDIO_SLICE_CYCLES: u64 = 20_000;
 
 pub struct RuntimeComponents {
     pub mem: Memory,
@@ -35,6 +51,11 @@ pub struct RuntimeComponents {
     /// T-cycles since the gate array's 52-line interrupt counter last
     /// restarted. Also drives the block-op interrupt-yield projection.
     pub cycles_since_irq: u32,
+    /// Gate array interrupt counter in CRTC scanlines since the last
+    /// 52-line crossing. Counted on the same HSYNC edges as the VBL reset,
+    /// so the frame-anchored crossing and the VSYNC+2 reset can never race
+    /// across instruction-boundary quantization.
+    pub lines_since_irq: u32,
 }
 
 impl RuntimeComponents {
@@ -49,7 +70,7 @@ impl RuntimeComponents {
         let crtc = Crtc::default();
         let keyboard = Keyboard::default();
         let fdc = Fdc::default();
-        RuntimeComponents { mem, registers, address_bus, data_bus, gate_array, ppi, psg, crtc, keyboard, fdc, cycles_since_irq: 0 }
+        RuntimeComponents { mem, registers, address_bus, data_bus, gate_array, ppi, psg, crtc, keyboard, fdc, cycles_since_irq: 0, lines_since_irq: 0 }
     }
 
     /// Routes an OUT to the right device. Decode follows the hardware (and
@@ -136,12 +157,35 @@ impl RuntimeComponents {
 
 pub struct Runtime {
     pub components: RuntimeComponents,
+    /// Sample producer for the live audio stream; absent when audio is
+    /// muted, unsupported, or no device opened.
+    pub audio: Option<AudioProducer>,
+    /// Scratch buffer reused across audio renders.
+    audio_scratch: Vec<f32>,
+    /// Audio production owed by executed machine time but not yet rendered,
+    /// in exact units of T-cycles × sample rate (no fractional loss).
+    audio_owed_x: u64,
+    // Once-per-second audio diagnostics.
+    audio_diag_last_log: Option<std::time::Instant>,
+    audio_diag_calls: u32,
+    audio_diag_samples: u64,
+    /// Machine T-cycles executed since the last diagnostics line.
+    audio_diag_cycles: u64,
 }
 
 impl Runtime {
 
     pub fn default() -> Runtime {
-        Runtime { components: RuntimeComponents::default() }
+        Runtime {
+            components: RuntimeComponents::default(),
+            audio: None,
+            audio_scratch: Vec::new(),
+            audio_owed_x: 0,
+            audio_diag_last_log: None,
+            audio_diag_calls: 0,
+            audio_diag_samples: 0,
+            audio_diag_cycles: 0,
+        }
     }
 
     pub fn load_rom_from_bytes(&mut self, bytes: &[u8]) {
@@ -187,12 +231,6 @@ impl Runtime {
         let op = instruction_set::decode::decode(&self.components.mem, &mut self.components.registers.pc);
         let pc_after = self.components.registers.pc.get();
 
-        let machine_code: String = (pc_before..pc_after)
-            .map(|addr| format!("{:02X}", self.components.mem.read(addr)))
-            .collect::<Vec<String>>()
-            .join(" ");
-
-        let assembly = instruction_set::assembly(&op);
         let cycles = instruction_set::ops::execute(&op, &mut self.components);
 
         // EI takes effect after the instruction following it: the delay flag
@@ -205,18 +243,29 @@ impl Runtime {
         let r = self.components.registers.r.get();
         self.components.registers.r.set((r & 0x80) | ((r.wrapping_add(1)) & 0x7F));
 
-        let hl = self.components.registers.get16(crate::memory::R16::HL);
-        let bc = self.components.registers.get16(crate::memory::R16::BC);
-        let de = self.components.registers.get16(crate::memory::R16::DE);
-        let iy = self.components.registers.get16(crate::memory::R16::IY);
-        let af = self.components.registers.get16(crate::memory::R16::AF);
-        debug!("{:0>8X} {:0>4X}\t{: <14}\t{: <20}\t({} cycles)\tAF:{:04X} HL:{:04X} DE:{:04X} BC:{:04X} IY:{:04X} SP:{:04X}", self.components.mem.diagnostics_step, pc_before, machine_code, assembly, cycles, af, hl, de, bc, iy, self.components.registers.sp.get());
+        // The instruction trace is only materialised when debug logging is
+        // on: building it for every fetch costs the loop several percent
+        // even with the log level off.
+        if log::log_enabled!(log::Level::Debug) {
+            let machine_code: String = (pc_before..pc_after)
+                .map(|addr| format!("{:02X}", self.components.mem.read(addr)))
+                .collect::<Vec<String>>()
+                .join(" ");
+            let assembly = instruction_set::assembly(&op);
+            let hl = self.components.registers.get16(crate::memory::R16::HL);
+            let bc = self.components.registers.get16(crate::memory::R16::BC);
+            let de = self.components.registers.get16(crate::memory::R16::DE);
+            let iy = self.components.registers.get16(crate::memory::R16::IY);
+            let af = self.components.registers.get16(crate::memory::R16::AF);
+            debug!("{:0>8X} {:0>4X}\t{: <14}\t{: <20}\t({} cycles)\tAF:{:04X} HL:{:04X} DE:{:04X} BC:{:04X} IY:{:04X} SP:{:04X}", self.components.mem.diagnostics_step, pc_before, machine_code, assembly, cycles, af, hl, de, bc, iy, self.components.registers.sp.get());
+        }
         cycles
     }
 
     /// Runs for approximately `budget` T-cycles, servicing the gate array's
     /// 52-scanline interrupt as boundaries are crossed. Returns the cycles
-    /// actually consumed.
+    /// actually consumed. Audio owed by the executed machine time is
+    /// rendered in lockstep (see `clock_audio`).
     pub fn run_for_cycles(&mut self, budget: u32) -> u32 {
         let mut consumed: u32 = 0;
         while consumed < budget {
@@ -227,15 +276,107 @@ impl Runtime {
                 // (matches the real lock-up).
                 let burn = (budget - consumed).min(self.components.crtc.t_to_line_end());
                 consumed += burn;
+                self.audio_diag_cycles += burn as u64;
                 self.advance_time(burn);
+                self.clock_audio(burn);
                 continue;
             }
 
             let cycles = self.step();
             consumed += cycles;
+            self.audio_diag_cycles += cycles as u64;
             self.advance_time(cycles);
+            self.clock_audio(cycles);
         }
         consumed
+    }
+
+    /// Accrues the audio owed by `cycles` of machine time and renders it in
+    /// ~5ms slices.
+    ///
+    /// Production is tied to executed T-cycles, not host wall time, so the
+    /// audio timeline always matches the machine's: a slow or jittery host
+    /// slows sound and video together coherently instead of letting audio
+    /// race ahead of (or behind) what is on screen, and PSG register writes
+    /// land in the audio within one slice.
+    fn clock_audio(&mut self, cycles: u32) {
+        if self.audio.is_none() {
+            return;
+        }
+        let rate = self.components.psg.sample_rate as u64;
+        self.audio_owed_x = self.audio_owed_x.saturating_add(cycles as u64 * rate);
+        self.render_owed_audio(false);
+    }
+
+    /// Renders any owed audio even below the slice threshold: hosts call
+    /// this when pausing or shutting down so the stream ends clean.
+    pub fn flush_audio(&mut self) {
+        self.render_owed_audio(true);
+    }
+
+    /// Converts the owed machine time into samples and pushes them to the
+    /// output ring. With `force` cleared, nothing renders until a full
+    /// slice is owed; forced renders emit everything owed.
+    fn render_owed_audio(&mut self, force: bool) {
+        let Some(producer) = &self.audio else { return };
+        let rate = self.components.psg.sample_rate as u64;
+        if !force && self.audio_owed_x < AUDIO_SLICE_CYCLES * rate {
+            return;
+        }
+        let mut samples = (self.audio_owed_x / Z80_CLOCK_HZ) as usize;
+        self.audio_owed_x -= samples as u64 * Z80_CLOCK_HZ;
+
+        // Trim for the few-ppm drift between the host pacing clock and the
+        // audio device clock: when the ring creeps past a water mark, shed
+        // (or add) one sample per render until it drifts back. The ~0.5%
+        // speed modulation is inaudible, and the ring level stays bounded
+        // forever instead of walking to overflow or underrun.
+        let capacity = producer.capacity();
+        let level = producer.len();
+        if level * 2 >= capacity {
+            samples = samples.saturating_sub(1);
+        } else if level * 4 < capacity {
+            samples += 1;
+        }
+        if samples == 0 {
+            return;
+        }
+        if self.audio_scratch.len() < samples {
+            self.audio_scratch.resize(samples, 0.0);
+        }
+        let scratch = &mut self.audio_scratch[..samples];
+        self.components.psg.render_samples(scratch);
+        producer.push(scratch);
+
+        // Once-per-second metering: with RUST_LOG=debug this pins down any
+        // mismatch between the machine-time production rate and the output
+        // stream's drain rate.
+        self.audio_diag_calls += 1;
+        self.audio_diag_samples += samples as u64;
+        let now = std::time::Instant::now();
+        let elapsed_secs = match self.audio_diag_last_log {
+            None => {
+                self.audio_diag_last_log = Some(now);
+                0.0
+            }
+            Some(prev) => now.duration_since(prev).as_secs_f64(),
+        };
+        if elapsed_secs >= 1.0 {
+            let cycles_rate = self.audio_diag_cycles as f64 / elapsed_secs;
+            debug!(
+                "audio: {:.1} render calls/s, {:.0} samples/s, ring {}/{}, machine {:.0}% ({} T-cycles/s of 4MHz)",
+                self.audio_diag_calls as f64 / elapsed_secs,
+                self.audio_diag_samples as f64 / elapsed_secs,
+                level,
+                capacity - 1,
+                cycles_rate / Z80_CLOCK_HZ as f64 * 100.0,
+                cycles_rate,
+            );
+            self.audio_diag_last_log = Some(now);
+            self.audio_diag_calls = 0;
+            self.audio_diag_samples = 0;
+            self.audio_diag_cycles = 0;
+        }
     }
 
     /// Advances the CRTC and gate array timing by `cycles` T-cycles and
@@ -243,7 +384,10 @@ impl Runtime {
     ///
     /// Interrupt semantics follow the gate array: a 6-bit counter increments
     /// on every HSYNC falling edge (one per scanline); at 52 it asserts INT
-    /// and restarts. INT stays asserted until acknowledged, so crossings
+    /// and restarts. The counter is counted in CRTC lines — the same edges
+    /// the VSYNC+2 reset uses — so a crossing that coincides with the reset
+    /// is always processed first and never erased by instruction-boundary
+    /// quantization. INT stays asserted until acknowledged, so crossings
     /// under DI latch at most one pending interrupt. Two HSYNCs after a
     /// VSYNC the counter is reset, issuing an interrupt only when the
     /// counter is below 32 (the frame-fly alignment the firmware relies on).
@@ -252,20 +396,23 @@ impl Runtime {
     fn advance_time(&mut self, cycles: u32) {
         self.components.cycles_since_irq += cycles;
         let lines = self.components.crtc.advance(cycles);
+        self.components.lines_since_irq += lines;
         if self.components.crtc.take_vsync_start() {
             self.components.gate_array.vsync_wait = 2;
         }
         // The 52-line counter first: a hit asserts INT and restarts the
         // counter (so a coinciding post-VSYNC check sees the wrapped value).
-        while self.components.cycles_since_irq >= IRQ_PERIOD {
-            self.components.cycles_since_irq -= IRQ_PERIOD;
+        while self.components.lines_since_irq >= IRQ_LINES {
+            self.components.lines_since_irq -= IRQ_LINES;
+            self.components.cycles_since_irq = 0;
             self.components.gate_array.irq_pending = true;
         }
         for _ in 0..lines {
             if self.components.gate_array.vsync_wait > 0 {
                 self.components.gate_array.vsync_wait -= 1;
                 if self.components.gate_array.vsync_wait == 0 {
-                    let below_32 = self.components.cycles_since_irq < 32 * LINE_T;
+                    let below_32 = self.components.lines_since_irq < 32;
+                    self.components.lines_since_irq = 0;
                     self.components.cycles_since_irq = 0;
                     if below_32 {
                         self.components.gate_array.irq_pending = true;
@@ -291,7 +438,8 @@ impl Runtime {
         self.components.gate_array.irq_pending = false;
         // Acknowledging the interrupt clears bit 5 of the gate array's
         // counter: the next interrupt cannot occur fewer than 32 scanlines
-        // later. In T-cycles that is a modulo by 32 * LINE_T.
+        // later.
+        self.components.lines_since_irq %= 32;
         self.components.cycles_since_irq %= 32 * LINE_T;
         let return_address = registers.pc.get();
         registers.sp.push(&mut self.components.mem, return_address);
@@ -708,6 +856,66 @@ mod tests {
     fn test_assembly_output() {
         let op = Op::LdR16N(crate::memory::R16::HL, 0x1234);
         assert_eq!(assembly(&op), "LD HL,1234");
+    }
+
+    #[test]
+    fn test_audio_production_tracks_machine_cycles() {
+        use crate::audio::audio_ring;
+        use crate::devices::psg::{PSG_REG_SELECT, PSG_REG_WRITE};
+
+        let mut rt = runtime();
+        let (producer, consumer) = audio_ring();
+        rt.audio = Some(producer);
+        rt.components.psg.sample_rate = 44_100;
+        // Program a tone through the register protocol: period 142 is
+        // concert A (440Hz) on the 1MHz PSG.
+        for (reg, value) in [(0u8, 142u8), (1u8, 0u8), (7u8, 0x3E), (8u8, 15)] {
+            let psg = &mut rt.components.psg;
+            psg.control = PSG_REG_SELECT;
+            psg.write_data(reg);
+            psg.control = PSG_REG_WRITE;
+            psg.write_data(value);
+        }
+        // Audio is produced in lockstep with executed machine time: ten
+        // frames of 80k T-cycles at 4MHz owe exactly 882 samples each at
+        // 44.1kHz. The drift trim may adjust by one sample per ~5ms render
+        // slice (≤40 slices here), so the flushed total lands in a small
+        // band around the exact machine-time figure; what must hold is that
+        // production tracks machine cycles, not host wall time (a wall-clock
+        // scheme would produce ~nothing for ten instantly-executed frames).
+        let mut total = 0usize;
+        let mut peak = 0.0f32;
+        let mut buf = [0f32; 4096];
+        for _ in 0..10 {
+            rt.run_for_cycles(80_000);
+            loop {
+                let got = consumer.pop(&mut buf);
+                if got == 0 {
+                    break;
+                }
+                total += got;
+                for &value in &buf[..got] {
+                    peak = peak.max(value.abs());
+                }
+            }
+        }
+        rt.flush_audio();
+        loop {
+            let got = consumer.pop(&mut buf);
+            if got == 0 {
+                break;
+            }
+            total += got;
+            for &value in &buf[..got] {
+                peak = peak.max(value.abs());
+            }
+        }
+        assert!(
+            (8_740..=8_900).contains(&total),
+            "ten 80k-cycle frames must owe ~8820 samples at 44.1kHz, got {}",
+            total
+        );
+        assert!(peak > 0.05, "a programmed tone must be audible, peak {}", peak);
     }
 
     #[test]

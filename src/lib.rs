@@ -4,6 +4,8 @@ pub mod memory;
 pub mod instruction_set;
 pub mod runtime;
 pub mod video;
+pub mod audio;
 pub mod devices;
 pub mod dsk;
+pub mod host;
 pub mod utils;

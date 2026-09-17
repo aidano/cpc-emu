@@ -1,54 +1,56 @@
-// Slint window backend: presents frames in a native window, driven by a 50Hz timer.
-// Keyboard events are forwarded to the emulated keyboard matrix.
+// Slint window backend: presents frames produced by the dedicated emulation
+// thread through a latest-wins mailbox; keyboard events are forwarded to the
+// emulation thread over a channel. The UI thread never touches the machine,
+// so window and presentation work cannot interfere with emulation pacing or
+// audio production.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use slint::{ComponentHandle, Image, SharedPixelBuffer, Timer, TimerMode, Weak};
 
+use crate::audio;
+use crate::host::{self, FrameMailbox};
 use crate::runtime::Runtime;
-use crate::video::renderer;
+use crate::video::Frame;
 
 slint::include_modules!();
 
-/// 50 frames per second at 4MHz: the cycles executed per display frame.
-const CYCLES_PER_FRAME: u32 = 80_000;
+/// Presentation cadence: 50Hz, matching the machine's frame rate.
+const PRESENT_INTERVAL: Duration = Duration::from_millis(20);
 
-pub fn run(runtime: Runtime) -> Result<(), slint::PlatformError> {
-    let runtime = Rc::new(RefCell::new(runtime));
+pub fn run(
+    runtime: Runtime,
+    _audio: Option<audio::AudioOutput>,
+) -> Result<(), slint::PlatformError> {
+    let mailbox = Arc::new(FrameMailbox::new(640, 400));
+    let (key_tx, key_rx) = mpsc::channel::<(String, i32)>();
+    // The emulation thread owns the machine from here on; the UI thread
+    // only presents frames and forwards input.
+    let _emu = host::spawn_emu_thread(runtime, Arc::clone(&mailbox), key_rx);
+
     let window = CpcWindow::new()?;
 
     let weak = window.as_weak();
-    let timer_runtime = Rc::clone(&runtime);
     let timer = Timer::default();
-    timer.start(TimerMode::Repeated, Duration::from_millis(20), move || {
+    let timer_mailbox = Arc::clone(&mailbox);
+    let mut display = Frame::new(640, 400);
+    timer.start(TimerMode::Repeated, PRESENT_INTERVAL, move || {
         let Some(window) = weak.upgrade() else { return };
-        let (frame, ppi_line) = {
-            let mut runtime = timer_runtime.borrow_mut();
-            runtime.run_for_cycles(CYCLES_PER_FRAME);
-            let frame = renderer::render(&runtime.components.mem, &runtime.components.gate_array, &runtime.components.crtc);
-            let line = runtime.components.ppi.keyboard_line;
-            (frame, line)
-        };
-        // Normalise every mode to the same display footprint (640x400) so
-        // pixel shapes match the hardware: mode 0 pixels are twice as wide
-        // as tall (4x2), mode 1 square (2x2), mode 2 twice as tall (1x2).
-        let frame = frame.scaled(640 / frame.width, 400 / frame.height);
-        let buffer = SharedPixelBuffer::clone_from_slice(&frame.rgba, frame.width as u32, frame.height as u32);
+        if !timer_mailbox.read_latest(&mut display) {
+            return;
+        }
+        let buffer = SharedPixelBuffer::clone_from_slice(
+            &display.rgba,
+            display.width as u32,
+            display.height as u32,
+        );
         window.set_frame(Image::from_rgba8(buffer));
-        // Keep the keyboard line selection visible in the window title for debugging.
-        let _ = ppi_line;
     });
 
-    let key_runtime = runtime.clone();
     window.on_key(move |text, pressed| {
-        let mut runtime = key_runtime.borrow_mut();
-        if pressed != 0 {
-            runtime.components.keyboard.press_text(&text);
-        } else {
-            runtime.components.keyboard.release_text(&text);
-        }
+        let _ = key_tx.send((text.to_string(), pressed));
     });
 
     window.run()

@@ -41,13 +41,19 @@ fn pen_color(ga: &GateArray, pen: usize) -> (u8, u8, u8) {
     super::hardware_color(ga.pens[pen])
 }
 
-pub fn render(mem: &Memory, ga: &GateArray, crtc: &Crtc) -> Frame {
+/// Renders one frame into `out`, reusing its buffer. On a mode change the
+/// buffer is reallocated to the mode's dimensions; otherwise the call is
+/// allocation-free, which keeps the emulation thread's per-frame cost small
+/// and predictable.
+pub fn render_into(mem: &Memory, ga: &GateArray, crtc: &Crtc, out: &mut Frame) {
     let (width, height, pixels_per_byte) = mode_dimensions(ga.mode);
     // One character row of screen data is 80 bytes = 40 CRTC words in every
     // mode; consecutive scanlines of the row sit 0x800 apart (raster bits).
     let row_words = mode_stride(ga.mode) / 2;
     let (page, offset) = crtc.video_origin();
-    let mut frame = Frame::new(width, height);
+    if out.width != width || out.height != height {
+        *out = Frame::new(width, height);
+    }
 
     for y in 0..height {
         let row = y / 8;
@@ -85,10 +91,16 @@ pub fn render(mem: &Memory, ga: &GateArray, crtc: &Crtc) -> Frame {
                     pen_color(ga, pen as usize)
                 }
             };
-            frame.set_pixel(x, y, color);
+            out.set_pixel(x, y, color);
         }
     }
+}
 
+/// Renders one frame, allocating a fresh Frame for it. Prefer `render_into`
+/// in hot loops.
+pub fn render(mem: &Memory, ga: &GateArray, crtc: &Crtc) -> Frame {
+    let mut frame = Frame::new(1, 1);
+    render_into(mem, ga, crtc, &mut frame);
     frame
 }
 
