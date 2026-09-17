@@ -9,6 +9,10 @@ use cpc_emu::video::GateArray;
 /// pixels at 0xC000 + row*0x50 + scanline*0x800 + col*2, and each font bit
 /// expands to two screen pixels. Glyphs are matched against the OS ROM font
 /// (ASCII 32 starts at ROM 0x3900, 8 bytes per character).
+///
+/// Screen bytes come through `read_video_ram`, like the gate array's fetch:
+/// during the boot's ROM scan the upper ROM is paged in over the screen, and
+/// a plain `mem.read` would then decode ROM bytes instead of screen RAM.
 fn decode_screen_text(mem: &cpc_emu::memory::Memory, rom: &[u8]) -> Vec<String> {
     let mut lines = Vec::new();
     for row in 0..25u16 {
@@ -16,8 +20,8 @@ fn decode_screen_text(mem: &cpc_emu::memory::Memory, rom: &[u8]) -> Vec<String> 
         for col in 0..40usize {
             let mut glyph = [0u8; 8];
             for sl in 0..8usize {
-                let b0 = mem.read(0xC000 + row * 0x50 + (sl as u16) * 0x800 + (col as u16) * 2);
-                let b1 = mem.read(0xC000 + row * 0x50 + (sl as u16) * 0x800 + (col as u16) * 2 + 1);
+                let b0 = mem.read_video_ram(0xC000 + row * 0x50 + (sl as u16) * 0x800 + (col as u16) * 2);
+                let b1 = mem.read_video_ram(0xC000 + row * 0x50 + (sl as u16) * 0x800 + (col as u16) * 2 + 1);
                 let mut bits = 0u8;
                 for n in 0..8usize {
                     let byte = if n < 4 { b0 } else { b1 };
@@ -101,7 +105,7 @@ fn boot_reaches_firmware_screen() {
     // Screen RAM should have been touched by the firmware (initial fill is 0x01).
     let mut touched = 0;
     for addr in 0xC000..0xFFFFu16 {
-        if runtime.components.mem.read(addr) != 0x01 {
+        if runtime.components.mem.read_video_ram(addr) != 0x01 {
             touched += 1;
         }
     }
@@ -131,7 +135,7 @@ fn boot_reaches_firmware_screen() {
     // scans the matrix (PPI port C line select -> PSG reg 14) and the editor
     // echoes the keypress to the screen.
     let screen_before: Vec<u8> = (0xC000..=0xFFFFu16)
-        .map(|a| runtime.components.mem.read(a))
+        .map(|a| runtime.components.mem.read_video_ram(a))
         .collect();
     runtime.components.keyboard.press_text("a");
     for _ in 0..50 {
@@ -142,7 +146,7 @@ fn boot_reaches_firmware_screen() {
         runtime.run_for_cycles(IRQ_PERIOD * 6);
     }
     let screen_after: Vec<u8> = (0xC000..=0xFFFFu16)
-        .map(|a| runtime.components.mem.read(a))
+        .map(|a| runtime.components.mem.read_video_ram(a))
         .collect();
     let changed = screen_before
         .iter()

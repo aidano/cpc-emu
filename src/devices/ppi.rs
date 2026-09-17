@@ -1,5 +1,5 @@
 // 8255 PPI: glues the CPU to the PSG (ports A/C) and system status (port B).
-// Semantics follow Caprice32's z80_IN_handler / z80_OUT_handler.
+// Semantics follow the 8255 datasheet modes and the standard CPC wiring.
 
 use crate::devices::psg::{Psg, PSG_REG_READ};
 
@@ -9,7 +9,7 @@ pub const PPI_PORT_C: u8 = 2;
 pub const PPI_CONTROL: u8 = 3;
 
 /// Machine identification jumpers read on port B: OEM is Amstrad, video
-/// refresh is 50Hz (Caprice32's default). The firmware uses these bits to
+/// refresh is 50Hz. The firmware uses these bits to
 /// detect the machine model; the wrong value derails boot.
 pub const PPI_JUMPERS: u8 = 0x1E;
 

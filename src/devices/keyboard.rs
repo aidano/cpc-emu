@@ -1,6 +1,6 @@
 // CPC keyboard matrix: 16 lines (10 used) of 8 keys each, read active-low
 // through PSG register 14. Scancodes are 0xXY where X = line, Y = bit mask
-// index. Mapping values from Caprice32's translation tables.
+// index.
 
 pub const SCANCODE_SHIFT: u8 = 0x25;
 const SCANCODE_RETURN: u8 = 0x06;

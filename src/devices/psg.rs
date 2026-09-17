@@ -1,5 +1,5 @@
 // AY-3-8912 PSG behind the PPI. The register file and I/O ports feed the
-// keyboard matrix; the audio side models the chip the way Caprice32 does:
+// keyboard matrix; the audio side models the chip itself:
 // a 1MHz clock, tone half-cycles of 8*T clocks (f = clock/(16*T)), a 17-bit
 // noise LFSR stepped every 16*N clocks, and one 16-level envelope ramp per
 // 256*EP clocks.
@@ -17,8 +17,8 @@ pub const PSG_CLOCK_HZ: u32 = 1_000_000;
 /// Output sample rate until the audio backend reports the device's rate.
 pub const DEFAULT_SAMPLE_RATE: u32 = 44_100;
 
-/// The AY's 4-bit amplitude curve (Hacker KAY's measured table, also used
-/// by Caprice32): each step is roughly exponential, not linear.
+/// The AY's 4-bit amplitude curve (Hacker KAY's measured table): each step
+/// is roughly exponential, not linear.
 const VOLUME: [f32; 16] = [
     0.0,
     836.0 / 65535.0,
@@ -57,7 +57,7 @@ pub struct Psg {
     tone_phase: [u32; 3],
     /// Current tone square-wave level, per channel.
     tone_level: [bool; 3],
-    /// The 17-bit noise LFSR, seeded like Caprice32 (period 2^17-1).
+    /// The 17-bit noise LFSR (period 2^17-1).
     noise_lfsr: u32,
     noise_phase: u32,
     noise_level: bool,
@@ -198,7 +198,7 @@ impl Psg {
             self.env_step();
         }
         // Mixer: register 7 bits 0-2 gate tone, 3-5 gate noise (set = off).
-        // Caprice32 quirk worth keeping: in envelope mode with a tone period
+        // Chip quirk worth keeping: in envelope mode with a tone period
         // of 4 or less the tone counts as always-high, so envelope-driven
         // sounds are not gated by an ultrasonic square wave.
         let mut sum = 0.0f64;
@@ -392,8 +392,8 @@ mod tests {
     }
 
     #[test]
-    fn test_noise_lfsr_matches_caprice32() {
-        // Golden sequence computed from the Caprice32/AY Emulator formula:
+    fn test_noise_lfsr_golden_sequence() {
+        // Golden sequence computed from the LFSR formula:
         // feedback from bits 13 and 16, inverted, shifted into a 17-bit seed.
         let golden: [(u32, bool); 8] = [
             (0x1FFFE, false),
@@ -574,7 +574,7 @@ mod tests {
 
     #[test]
     fn test_volume_curve_matches_hacker_kay_table() {
-        // Spot-check the measured amplitude table used by Caprice32.
+        // Spot-check Hacker KAY's measured amplitude table.
         assert_eq!(super::VOLUME[0], 0.0);
         assert_eq!(super::VOLUME[1], 836.0 / 65535.0);
         assert_eq!(super::VOLUME[15], 1.0);

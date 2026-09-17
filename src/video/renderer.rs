@@ -45,6 +45,10 @@ fn pen_color(ga: &GateArray, pen: usize) -> (u8, u8, u8) {
 /// buffer is reallocated to the mode's dimensions; otherwise the call is
 /// allocation-free, which keeps the emulation thread's per-frame cost small
 /// and predictable.
+///
+/// Pixels are fetched through `Memory::read_video_ram`: like the real gate
+/// array, the video fetch must bypass the ROM overlay and RAM paging, or
+/// every ROM/bank reconfiguration flashes garbage over the screen.
 pub fn render_into(mem: &Memory, ga: &GateArray, crtc: &Crtc, out: &mut Frame) {
     let (width, height, pixels_per_byte) = mode_dimensions(ga.mode);
     // One character row of screen data is 80 bytes = 40 CRTC words in every
@@ -63,7 +67,7 @@ pub fn render_into(mem: &Memory, ga: &GateArray, crtc: &Crtc, out: &mut Frame) {
         for x in 0..width {
             let byte_index = x / pixels_per_byte;
             let word = (row_word + byte_index / 2) & 0x3FF;
-            let byte = mem.read(raster_base | (word << 1) | (byte_index & 1));
+            let byte = mem.read_video_ram(raster_base | (word << 1) | (byte_index & 1));
             let color = match ga.mode {
                 0 => {
                     // 4 bits per pixel, scrambled (see the Gate Array packing
@@ -250,5 +254,41 @@ mod tests {
         ga.pens[1] = 0x04; // royal blue ink
         let frame = render(&mem, &ga, &crtc);
         assert_eq!(frame.pixel(0, 0), (0x00, 0x00, 127));
+    }
+
+    #[test]
+    fn test_render_ignores_upper_rom_overlay() {
+        // A ROM paged in at &C000 overlays CPU reads only: the gate array's
+        // video fetch reads the RAM underneath (the firmware screen displays
+        // while the BASIC ROM is paged in). Rendering the ROM instead drew
+        // garbage over the screen on every ROM reconfiguration.
+        let (mut mem, mut ga, crtc) = setup();
+        ga.mode = 2;
+        ga.pens[1] = 0x12;
+        let rom = [0x00u8; 0x4000];
+        mem.load_expansion_rom_into_slot(&rom, 0); // also enables upper ROM
+        for x_byte in 0..0x50 {
+            mem.write(0xC000 + x_byte, 0xFF);
+        }
+        let frame = render(&mem, &ga, &crtc);
+        assert_eq!(frame.pixel(0, 0), (0x00, 0xFF, 0x00), "screen RAM must render, not ROM bytes");
+    }
+
+    #[test]
+    fn test_render_ignores_ram_config_paging() {
+        // The RAM configuration pages an expansion bank over &C000, but VRAM
+        // always lives in the base 64K: the screen stays visible while the
+        // CPU sees the paged bank (128K games page banks for music/streaming).
+        let (mut mem, mut ga, crtc) = setup();
+        ga.mode = 2;
+        ga.pens[1] = 0x12;
+        for x_byte in 0..0x50 {
+            mem.write(0xC000 + x_byte, 0xFF);
+        }
+        // Config 2 maps all four regions to the expansion bank; &C000 now
+        // exposes block 7, which holds only the 0x01 fill.
+        mem.set_ram_config(0xC2);
+        let frame = render(&mem, &ga, &crtc);
+        assert_eq!(frame.pixel(0, 0), (0x00, 0xFF, 0x00), "screen RAM must render, not the paged bank");
     }
 }

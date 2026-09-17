@@ -4,8 +4,7 @@ use crate::utils::{split_double_byte, combine_to_double_byte};
 
 /// The gate array RAM configurations for a 128K machine: each entry maps the
 /// four 16K address regions to a physical RAM block. Blocks 0-3 form the
-/// standard 64K bank; blocks 4-7 are the expansion bank. (Reference:
-/// Caprice32 ga_init_banking.)
+/// standard 64K bank; blocks 4-7 are the expansion bank.
 const RAM_CONFIGURATIONS: [[usize; 4]; 8] = [
     [0, 1, 2, 3],
     [0, 1, 2, 7],
@@ -71,6 +70,19 @@ impl Memory {
     pub fn write(&mut self, address: u16, value: u8) {
         let region = (address >> 14) as usize;
         self.blocks[self.ram_config[region]][(address & 0x3FFF) as usize] = value;
+    }
+
+    /// Reads video RAM the way the gate array's video fetch does: always the
+    /// base 64K RAM via the raw video address. The CRTC/gate-array fetch never
+    /// sees the ROM configuration (ROMs overlay CPU reads only — this is why
+    /// the firmware screen displays while the BASIC ROM is paged in at &C000)
+    /// nor the RAM configuration ("VRAM is always located in the first 64K, in
+    /// no way affected by this register" — CPCWiki Gate Array). Rendering
+    /// through `read` instead draws ROM bytes or a paged expansion bank
+    /// whenever the machine reconfigures memory with the screen static — the
+    /// "random garbage" flashes.
+    pub fn read_video_ram(&self, address: u16) -> u8 {
+        self.blocks[(address >> 14) as usize][(address & 0x3FFF) as usize]
     }
 
     /// Selects one of the gate array RAM configurations (value written with
@@ -555,5 +567,32 @@ mod tests {
         mem16.load_os_rom(&os_rom);
         mem16.write(0xC000, 0x77);
         assert!(mem16.read(0xC000) == 0x77);
+    }
+
+    #[test]
+    fn test_read_video_ram_bypasses_rom_and_paging() {
+        let mut mem = Memory::default();
+        let os_rom = [0xAA; 0x4000];
+        let expansion_rom = [0xBB; 0x4000];
+        mem.load_os_rom(&os_rom);
+        mem.load_expansion_rom(&expansion_rom);
+        mem.write(0xC000, 0x42);
+
+        // The gate array's video fetch never sees the ROM overlay...
+        mem.upper_rom_enabled = true;
+        assert_eq!(mem.read(0xC000), 0xBB, "CPU read is ROM-overlaid");
+        assert_eq!(mem.read_video_ram(0xC000), 0x42, "video fetch reads the RAM underneath");
+
+        // ...nor the RAM configuration: VRAM always lives in the base 64K.
+        mem.set_ram_config(0xC2);
+        mem.upper_rom_enabled = false; // drop the ROM overlay to see the paging alone
+        assert_eq!(mem.read(0xC000), 0x01, "config 2 exposes the expansion bank");
+        assert_eq!(mem.read_video_ram(0xC000), 0x42, "video fetch still reads base-bank RAM");
+        // A video page below 0x4000 likewise ignores the lower ROM overlay.
+        mem.set_ram_config(0xC0);
+        mem.lower_rom_enabled = true;
+        mem.write(0x0100, 0x77);
+        assert_eq!(mem.read(0x0100), 0xAA, "CPU read is lower-ROM-overlaid");
+        assert_eq!(mem.read_video_ram(0x0100), 0x77);
     }
 }

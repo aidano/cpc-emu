@@ -31,7 +31,7 @@ Options:
 ### Sound
 
 The AY-3-8912 PSG is emulated — three tone channels, the noise generator and
-the envelope shapes — using the same timing model as Caprice32 (1MHz PSG
+the envelope shapes — using the chip's timing model (1MHz PSG
 clock, tone = clock/(16·period)). Samples are mixed to the default audio
 output via `cpal`: WASAPI on Windows, CoreAudio on macOS, ALSA on Linux, at
 the device's sample rate. On machines without an audio device the emulator

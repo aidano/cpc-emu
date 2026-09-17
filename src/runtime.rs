@@ -73,8 +73,8 @@ impl RuntimeComponents {
         RuntimeComponents { mem, registers, address_bus, data_bus, gate_array, ppi, psg, crtc, keyboard, fdc, cycles_since_irq: 0, lines_since_irq: 0 }
     }
 
-    /// Routes an OUT to the right device. Decode follows the hardware (and
-    /// Caprice32): chips select on high-byte bit ranges; the RAM configuration
+    /// Routes an OUT to the right device. Decode follows the hardware: chips
+    /// select on high-byte bit ranges; the RAM configuration
     /// is identified by the written value and can overlap other decodes.
     pub fn port_out(&mut self, port: u16, value: u8) {
         let high = (port >> 8) as u8;

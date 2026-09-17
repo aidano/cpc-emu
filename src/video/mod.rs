@@ -80,7 +80,7 @@ pub trait VideoSink {
 /// The authentic Amstrad CPC hardware palette: the 5-bit gate array colour
 /// byte indexes directly into this table. Each channel has three levels
 /// (0 / 0.5 / 1.0); note hardware colour 0 is grey, not black — true black
-/// is index 0x14. Table from the standard emulator palette (Caprice32).
+/// is index 0x14. Table from the standard CPC emulator palette.
 const HARDWARE_PALETTE: [(u8, u8, u8); 32] = [
     (127, 127, 127), (127, 127, 127), (0, 255, 127),   (255, 255, 127), // 0-3
     (0, 0, 127),     (255, 0, 127),   (0, 127, 127),   (255, 127, 127), // 4-7
