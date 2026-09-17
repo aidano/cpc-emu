@@ -34,9 +34,19 @@ impl Crtc {
         Crtc {
             reg_select: 0,
             // Power-on screen base per the CPC firmware convention: R12 = 0x30
-            // (video page bits 5-4 = 11 -> 0xC000-0xFFFF, word offset 0).
+            // (video page bits 5-4 = 11 -> 0xC000-0xFFFF, word offset 0). The
+            // remaining timing registers carry the firmware's display setup:
+            // a 40-character by 25-row window of 8-line rows.
             registers: {
                 let mut registers = [0x00; 16];
+                registers[0] = 63; // 64 characters per line
+                registers[1] = 40; // 40 displayed characters
+                registers[2] = 46; // HSYNC position
+                registers[3] = 0x8E; // sync widths
+                registers[4] = 38; // 39 rows per frame
+                registers[6] = 25; // 25 displayed rows
+                registers[7] = 30; // vsync row
+                registers[9] = 7; // 8 scanlines per row
                 registers[12] = 0x30;
                 registers
             },
@@ -54,8 +64,25 @@ impl Crtc {
         (self.registers[0] as u32) + 1
     }
 
-    fn lines_per_row(&self) -> u32 {
+    /// Scanlines per character row (R9+1). The raster counter feeds the
+    /// gate array's A13-A11, so each scanline of a row sits 0x800 apart.
+    pub fn lines_per_row(&self) -> u32 {
         (self.registers[9] as u32 & 0x1F) + 1
+    }
+
+    /// Characters displayed per scanline (R1). This is also the character-row
+    /// stride in video memory: the MA counter only advances during displayed
+    /// characters and is captured for the next char-line when the raster
+    /// counter wraps, so each character row starts R1 words (2·R1 bytes)
+    /// after the previous one. Narrow-screen games program R1 = 32 and lay
+    /// their screens out on that 64-byte stride.
+    pub fn display_chars(&self) -> u32 {
+        (self.registers[1] as u32).min(self.chars_per_line())
+    }
+
+    /// Character rows displayed per frame (R6).
+    pub fn display_rows(&self) -> u32 {
+        (self.registers[6] as u32) & 0x7F
     }
 
     fn rows_per_frame(&self) -> u32 {
@@ -221,6 +248,23 @@ mod tests {
         crtc.reg_select = 13;
         crtc.write_register(0x00);
         assert_eq!(crtc.start_address(), 0xC000);
+    }
+
+    #[test]
+    fn test_display_window_accessors() {
+        // Firmware-like defaults: a 40x25 window of 8-line rows.
+        let mut crtc = Crtc::default();
+        assert_eq!(crtc.display_chars(), 40);
+        assert_eq!(crtc.display_rows(), 25);
+        assert_eq!(crtc.lines_per_row(), 8);
+        // Cybernoid II's narrow window: R1 = 32 chars, R6 = 24 rows.
+        crtc.registers[1] = 0x20;
+        crtc.registers[6] = 0x18;
+        assert_eq!(crtc.display_chars(), 32);
+        assert_eq!(crtc.display_rows(), 24);
+        // R1 is sampled no wider than the line total (R0+1 = 64).
+        crtc.registers[1] = 0xFF;
+        assert_eq!(crtc.display_chars(), 64);
     }
 
     #[test]

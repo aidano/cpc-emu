@@ -1,8 +1,15 @@
 // Renders CPC video memory into a Frame, honouring the gate array mode and palette.
 //
-// With the default base 0xC000 the screen memory layout is:
-//   address = base + (y / 8) * stride + (y % 8) * 0x800 + (x / pixels_per_byte)
+// The display window and the memory layout both come from the CRTC: R1
+// characters per scanline, R6 character rows of R9+1 scanlines. Each
+// character row of screen data spans R1 words (2·R1 bytes) — the MA counter
+// only advances during displayed characters and is captured for the next
+// char-line when the raster counter wraps — so with the firmware's R1 = 40
+// the layout is:
+//   address = base + (y / 8) * 0x50 + (y % 8) * 0x800 + (x / pixels_per_byte)
 // Consecutive scanlines within a character row are 0x800 bytes apart.
+// Narrow-screen games program R1 = 32 (plus their own R6/R7) and lay their
+// screens out on the resulting 64-byte stride.
 //
 // Addresses are built the way the hardware wires them (see
 // Crtc::video_origin): A15-A14 select the 16K video page, A13-A11 the raster
@@ -16,22 +23,11 @@ use crate::memory::Memory;
 use super::{Frame, GateArray};
 use crate::devices::crtc::Crtc;
 
-const HEIGHT: u16 = 200;
-
-fn mode_dimensions(mode: u8) -> (u16, u16, u16) {
-    // (width, height, pixels per byte)
+fn mode_pixels_per_byte(mode: u8) -> u16 {
     match mode {
-        0 => (160, HEIGHT, 2),
-        1 => (320, HEIGHT, 4),
-        _ => (640, HEIGHT, 8),
-    }
-}
-
-fn mode_stride(mode: u8) -> u16 {
-    match mode {
-        0 => 0x50, // 80 bytes: 2 pixels/byte
-        1 => 0x50, // 80 bytes: 4 pixels/byte
-        _ => 0x50, // 80 bytes: 8 pixels/byte
+        0 => 2,
+        1 => 4,
+        _ => 8,
     }
 }
 
@@ -50,20 +46,25 @@ fn pen_color(ga: &GateArray, pen: usize) -> (u8, u8, u8) {
 /// array, the video fetch must bypass the ROM overlay and RAM paging, or
 /// every ROM/bank reconfiguration flashes garbage over the screen.
 pub fn render_into(mem: &Memory, ga: &GateArray, crtc: &Crtc, out: &mut Frame) {
-    let (width, height, pixels_per_byte) = mode_dimensions(ga.mode);
-    // One character row of screen data is 80 bytes = 40 CRTC words in every
-    // mode; consecutive scanlines of the row sit 0x800 apart (raster bits).
-    let row_words = mode_stride(ga.mode) / 2;
+    let pixels_per_byte = mode_pixels_per_byte(ga.mode);
+    // The CRTC defines the visible window: R1 characters per scanline and R6
+    // character rows of R9+1 scanlines each. A character cell is 2 bytes
+    // wide, so the frame is 2·pixels_per_byte pixels per character.
+    let chars = crtc.display_chars().max(1) as u16;
+    let rows = crtc.display_rows().max(1) as u16;
+    let lines_per_row = crtc.lines_per_row() as u16;
+    let width = chars * 2 * pixels_per_byte;
+    let height = rows * lines_per_row;
     let (page, offset) = crtc.video_origin();
     if out.width != width || out.height != height {
         *out = Frame::new(width, height);
     }
 
     for y in 0..height {
-        let row = y / 8;
-        let scanline = y % 8;
-        let row_word = (offset + row * row_words) & 0x3FF;
-        let raster_base = page | (scanline << 11);
+        let row = y / lines_per_row;
+        let scanline = y % lines_per_row;
+        let row_word = (offset + row * chars) & 0x3FF;
+        let raster_base = page | ((scanline & 7) << 11);
         for x in 0..width {
             let byte_index = x / pixels_per_byte;
             let word = (row_word + byte_index / 2) & 0x3FF;
@@ -213,6 +214,43 @@ mod tests {
         assert_eq!(frame.pixel(0, 0), (0x00, 0xFF, 0x00));
         // Row 1 renders from the scrolled base 0xC0A0, not from 0xC000.
         assert_eq!(frame.pixel(0, 8), (0x00, 0x00, 0x00));
+    }
+
+    #[test]
+    fn test_narrow_window_uses_r1_stride() {
+        // R1 = 32: the frame is 128px wide in mode 0 (4px per char) and
+        // character rows sit 0x40 bytes apart. Cybernoid II and Into the
+        // Eagle's Nest lay their screens out on this stride.
+        let (mut mem, mut ga, mut crtc) = setup();
+        ga.mode = 0;
+        ga.pens[15] = 0x12; // bright green ink
+        crtc.registers[1] = 32;
+        // Row 3, scanline 0 lives at 0xC000 + 3*0x40.
+        for x_byte in 0..0x40 {
+            mem.write(0xC000 + 3 * 0x40 + x_byte, 0xFF);
+        }
+        let frame = render(&mem, &ga, &crtc);
+        assert_eq!((frame.width, frame.height), (128, 200));
+        assert_eq!(frame.pixel(0, 24), (0x00, 0xFF, 0x00));
+        assert_eq!(frame.pixel(127, 24), (0x00, 0xFF, 0x00));
+        // Scanline 1 of row 3 comes from 0x800 further on.
+        assert_eq!(frame.pixel(0, 25), (0x00, 0x00, 0x00));
+        // The next char row starts one 0x40 stride later, not 0x50.
+        for x_byte in 0..0x40 {
+            mem.write(0xC000 + 4 * 0x40 + x_byte, 0xFF);
+        }
+        let frame = render(&mem, &ga, &crtc);
+        assert_eq!(frame.pixel(0, 32), (0x00, 0xFF, 0x00));
+    }
+
+    #[test]
+    fn test_r6_limits_frame_height() {
+        // R6 = 24 displays 24 character rows: 192 scanlines (Cybernoid II's
+        // window). A 25th row is never sampled.
+        let (mem, ga, mut crtc) = setup();
+        crtc.registers[6] = 24;
+        let frame = render(&mem, &ga, &crtc);
+        assert_eq!((frame.width, frame.height), (640, 192));
     }
 
     #[test]

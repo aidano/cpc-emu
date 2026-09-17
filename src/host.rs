@@ -137,9 +137,12 @@ pub fn spawn_emu_thread(
                     &runtime.components.crtc,
                     &mut machine_frame,
                 );
+                // The CRTC's window (R1/R6) sizes the machine frame; scale
+                // by integer factors, never below 1x: a window larger than
+                // the display footprint crops instead of dividing by zero.
                 machine_frame.scaled_into(
-                    DISPLAY_WIDTH / machine_frame.width,
-                    DISPLAY_HEIGHT / machine_frame.height,
+                    (DISPLAY_WIDTH / machine_frame.width).max(1),
+                    (DISPLAY_HEIGHT / machine_frame.height).max(1),
                     &mut scaled,
                 );
                 mailbox.publish(&scaled);
