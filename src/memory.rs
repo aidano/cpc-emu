@@ -132,6 +132,18 @@ impl Memory {
     pub fn load_expansion_rom(&mut self, bytes: &[u8; 0x4000]) {
         self.load_expansion_rom_into_slot(bytes, 0);
     }
+
+    /// Restores the power-on paging state without losing the ROM images or
+    /// RAM contents (a real reset does not wipe RAM): the standard low-RAM
+    /// configuration, with ROMs paged in as they are after the fitted-ROM
+    /// boot the firmware starts from.
+    pub fn reset_keep_contents(&mut self) {
+        self.ram_config = [0, 1, 2, 3];
+        self.lower_rom_enabled = true;
+        self.upper_rom_enabled = true;
+        self.upper_rom_number = 0;
+        self.diagnostics_step = 0;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -488,6 +500,35 @@ mod tests {
         assert!(mem.read(0x8000) == 0x34);
         assert!(mem.read(0x8001) == 0x12);
         assert!(mem.read16(0x8000) == 0x1234);
+    }
+
+    #[test]
+    fn test_reset_keep_contents() {
+        let mut mem = Memory::default();
+        let os: [u8; 0x4000] = [0xC9; 0x4000];
+        mem.load_os_rom(&os);
+        mem.load_expansion_rom_into_slot(&os, 7);
+        mem.write(0x8000, 0x42);
+        // Page the OS ROM out and select another RAM configuration, as
+        // guest code would before a reset. Configuration 1 maps region 3
+        // to block 7, so the 0xC000 region shows RAM, not the upper ROM.
+        mem.lower_rom_enabled = false;
+        mem.upper_rom_enabled = false;
+        mem.set_ram_config(0x01);
+        mem.set_upper_rom_number(7);
+        assert_eq!(mem.read(0xC000), 0x01, "RAM block 7 must be visible pre-reset");
+
+        mem.reset_keep_contents();
+
+        assert_eq!(mem.read(0x0000), 0xC9, "the OS ROM must be paged back in");
+        assert!(mem.lower_rom_enabled && mem.upper_rom_enabled);
+        assert_eq!(mem.read(0x8000), 0x42, "RAM contents survive a reset");
+        // Power-on selection is slot 0 (unfitted here), so the socket floats
+        // high until the firmware's ROM scan selects a fitted one.
+        assert_eq!(mem.upper_rom_number, 0);
+        assert_eq!(mem.read(0xC000), 0xFF, "unfitted slot 0 must float high");
+        mem.set_upper_rom_number(7);
+        assert_eq!(mem.read(0xC000), 0xC9, "the fitted slot 7 image must survive");
     }
 
     #[test]

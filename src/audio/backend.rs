@@ -2,6 +2,9 @@
 // default output device — WASAPI on Windows, CoreAudio on macOS, ALSA on
 // Linux. Without the feature the starter is a stub so callers need no cfg.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use crate::audio::AudioConsumer;
 
 #[cfg(feature = "audio")]
@@ -17,7 +20,15 @@ pub struct AudioOutput {
 /// `consumer`. Returns the handle plus the actual sample rate, so the PSG
 /// can render at the device's rate. Returns None (with a log) when no
 /// usable device exists: the emulator then runs silent.
-pub fn start(consumer: AudioConsumer) -> Option<(AudioOutput, u32)> {
+///
+/// The callback emits silence while `mute` or `paused` is set, but keeps
+/// draining the ring so the producer's pacing stays undisturbed and sound
+/// resumes cleanly when both clear.
+pub fn start(
+    consumer: AudioConsumer,
+    mute: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
+) -> Option<(AudioOutput, u32)> {
     #[cfg(feature = "audio")]
     {
         let host = cpal::default_host();
@@ -73,8 +84,16 @@ pub fn start(consumer: AudioConsumer) -> Option<(AudioOutput, u32)> {
                     mono.resize(frames, 0.0);
                 }
                 let got = consumer.pop(&mut mono[..frames]);
+                let silent =
+                    mute.load(Ordering::Relaxed) || paused.load(Ordering::Relaxed);
                 for frame in 0..frames {
-                    let value = if frame < got { mono[frame] } else { last_sample };
+                    let value = if silent {
+                        0.0
+                    } else if frame < got {
+                        mono[frame]
+                    } else {
+                        last_sample
+                    };
                     last_sample = value;
                     for slot in &mut data[frame * channels..frame * channels + channels] {
                         *slot = value;
@@ -121,7 +140,7 @@ pub fn start(consumer: AudioConsumer) -> Option<(AudioOutput, u32)> {
     }
     #[cfg(not(feature = "audio"))]
     {
-        let _ = consumer;
+        let _ = (consumer, mute, paused);
         None
     }
 }

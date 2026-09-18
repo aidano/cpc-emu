@@ -222,6 +222,28 @@ impl Runtime {
         self.components.fdc.set_disk(disk);
     }
 
+    /// Returns the machine to its power-on state, like a hardware reset:
+    /// the CPU and peripherals reinitialise and ROMs page back in, while
+    /// the ROM images and the inserted disc survive (a reset does not
+    /// eject drives) and RAM keeps its contents (the firmware wipes what
+    /// it needs during boot). The audio device rate set up at startup is
+    /// preserved.
+    pub fn reset(&mut self) {
+        let sample_rate = self.components.psg.sample_rate;
+        self.components.mem.reset_keep_contents();
+        self.components.registers = Registers::default();
+        self.components.gate_array = GateArray::default();
+        self.components.ppi = Ppi::default();
+        self.components.psg = Psg::default();
+        self.components.psg.sample_rate = sample_rate;
+        self.components.crtc = Crtc::default();
+        self.components.keyboard = Keyboard::default();
+        self.components.fdc.reset();
+        self.components.cycles_since_irq = 0;
+        self.components.lines_since_irq = 0;
+        self.audio_owed_x = 0;
+    }
+
     /// Fetches, decodes and executes a single instruction.
     /// Returns the number of T-cycles consumed.
     pub fn step(&mut self) -> u32 {
@@ -930,5 +952,47 @@ mod tests {
         assert_eq!(rt.components.registers.get16(crate::memory::R16::HL), 0x0100);
         assert!(rt.components.registers.f.zero()); // preserved
         assert!(!rt.components.registers.f.carry());
+    }
+
+    #[test]
+    fn test_reset_restores_cpu_and_rom_paging() {
+        let mut rt = runtime();
+        rt.load_rom_from_bytes(&vec![0xC9; 0x4000]); // RET-filled OS ROM
+        // Dirty everything the reset must restore: run far past the boot
+        // state and page the OS ROM out through the gate array.
+        rt.components.registers.pc.set(0x1234);
+        rt.components.registers.halted = true;
+        rt.components.registers.iff1 = true;
+        rt.components.keyboard.press_text("a");
+        rt.components.gate_array.lower_rom_enabled = false;
+        rt.components.mem.lower_rom_enabled = false;
+        assert_ne!(rt.components.mem.read(0x0000), 0xC9, "ROM must be paged out pre-reset");
+
+        rt.reset();
+
+        assert_eq!(rt.components.registers.pc.get(), 0x0000);
+        assert!(!rt.components.registers.halted);
+        assert!(!rt.components.registers.iff1);
+        assert_eq!(rt.components.keyboard.row(8), 0xFF, "reset must release held keys");
+        assert_eq!(rt.components.mem.read(0x0000), 0xC9, "reset must page the OS ROM back in");
+        assert_eq!(rt.components.cycles_since_irq, 0);
+        assert_eq!(rt.components.lines_since_irq, 0);
+    }
+
+    #[test]
+    fn test_reset_keeps_rom_image_disc_and_sample_rate() {
+        use crate::devices::fdc;
+        let mut rt = runtime();
+        rt.load_rom_from_bytes(&vec![0x00; 0x4000]);
+        rt.insert_disk(Some(crate::dsk::Dsk::init_from_bytes(&fdc::synthetic_dsk()).unwrap()));
+        rt.components.psg.sample_rate = 48_000;
+
+        rt.reset();
+
+        assert!(rt.components.fdc.disk.is_some(), "reset must not eject the disc");
+        assert_eq!(rt.components.psg.sample_rate, 48_000);
+        // The OS ROM image itself survives, and the reset paging state has
+        // it paged back in (the state the boot firmware starts from).
+        assert_eq!(rt.components.mem.read(0x0000), 0x00);
     }
 }

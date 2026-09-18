@@ -98,6 +98,14 @@ impl Fdc {
         self.disk = disk;
     }
 
+    /// Returns the controller to its power-on state, keeping the inserted
+    /// disc (a reset does not eject drives).
+    pub fn reset(&mut self) {
+        let disk = self.disk.take();
+        *self = Fdc::default();
+        self.disk = disk;
+    }
+
     fn drive_busy_bits(&self) -> u8 {
         let mut bits = 0;
         for (drive, pending) in self.seek_pending.iter().enumerate() {
@@ -351,34 +359,36 @@ fn decode_unit(byte: u8) -> (u8, u8) {
     (hd, us)
 }
 
+/// Builds a minimal NORMAL-format DSK with one 9-sector track holding
+/// sector 0xC1 at track 0, side 0. Shared with sibling modules' tests that
+/// need a valid disc image.
+#[cfg(test)]
+pub(crate) fn synthetic_dsk() -> Vec<u8> {
+    let mut dsk = vec![0u8; 0x100 + 0x100 + 9 * 512];
+    dsk[..11].copy_from_slice(b"MV - CPCEMU");
+    dsk[0x30] = 1; // track count
+    dsk[0x31] = 1; // side count
+    dsk[0x32] = 0x00; // track size low
+    dsk[0x33] = 0x13; // track size high: 0x1300 = 4864
+    let tib = 0x100;
+    dsk[tib + 0x10] = 0; // track number
+    dsk[tib + 0x11] = 0; // side number
+    dsk[tib + 0x14] = 2; // sector size code
+    dsk[tib + 0x15] = 1; // sector count
+    dsk[tib + 0x18] = 0; // sector C
+    dsk[tib + 0x19] = 0; // sector H
+    dsk[tib + 0x1A] = 0xC1; // sector R
+    dsk[tib + 0x1B] = 2; // sector N
+    let data_start = tib + 0x100;
+    for (i, b) in dsk[data_start..data_start + 512].iter_mut().enumerate() {
+        *b = (i & 0xFF) as u8;
+    }
+    dsk
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Fdc;
-
-    /// Builds a minimal NORMAL-format DSK with one 9-sector track holding
-    /// sector 0xC1 at track 0, side 0.
-    fn synthetic_dsk() -> Vec<u8> {
-        let mut dsk = vec![0u8; 0x100 + 0x100 + 9 * 512];
-        dsk[..11].copy_from_slice(b"MV - CPCEMU");
-        dsk[0x30] = 1; // track count
-        dsk[0x31] = 1; // side count
-        dsk[0x32] = 0x00; // track size low
-        dsk[0x33] = 0x13; // track size high: 0x1300 = 4864
-        let tib = 0x100;
-        dsk[tib + 0x10] = 0; // track number
-        dsk[tib + 0x11] = 0; // side number
-        dsk[tib + 0x14] = 2; // sector size code
-        dsk[tib + 0x15] = 1; // sector count
-        dsk[tib + 0x18] = 0; // sector C
-        dsk[tib + 0x19] = 0; // sector H
-        dsk[tib + 0x1A] = 0xC1; // sector R
-        dsk[tib + 0x1B] = 2; // sector N
-        let data_start = tib + 0x100;
-        for (i, b) in dsk[data_start..data_start + 512].iter_mut().enumerate() {
-            *b = (i & 0xFF) as u8;
-        }
-        dsk
-    }
+    use super::{Fdc, synthetic_dsk};
 
     fn fdc_with_disk() -> Fdc {
         let mut fdc = Fdc::default();
@@ -498,5 +508,17 @@ mod tests {
         write_command(&mut fdc, &[0x03, 0xDF, 0x02]);
         assert_eq!(fdc.phase, super::Phase::Idle);
         assert_eq!(fdc.read_status(), super::MSR_RQM);
+    }
+
+    #[test]
+    fn test_reset_keeps_the_disc() {
+        let mut fdc = fdc_with_disk();
+        write_command(&mut fdc, &[0x0F, 0x00, 0x05, 0x00]); // seek mid-command
+        fdc.reset();
+        assert!(fdc.disk.is_some(), "a reset must not eject the disc");
+        assert!(!fdc.motor);
+        assert_eq!(fdc.phase, super::Phase::Idle);
+        assert_eq!(fdc.tracks, [0; 4]);
+        assert_eq!(fdc.read_status(), super::MSR_RQM, "no drives may be busy");
     }
 }

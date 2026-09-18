@@ -10,11 +10,14 @@ clap = { version = "3.1.6", features = ["derive"] }
 env_logger = "0.10.0"
 log = "0.4.17"
 slint = { version = "1", optional = true }
+# Same crate slint uses as its desktop backend; a direct dependency gives
+# access to the underlying winit window (WinitWindowAccessor).
+i-slint-backend-winit = { version = "1.7", default-features = false, optional = true }
 cpal = { version = "0.15", optional = true }
 
 [features]
 default = ["gui", "audio"]
-gui = ["dep:slint"]
+gui = ["dep:slint", "dep:i-slint-backend-winit"]
 audio = ["dep:cpal"]
 
 [build-dependencies]

@@ -177,3 +177,48 @@ fn boot_reaches_firmware_screen() {
         runtime.components.registers.iff1
     );
 }
+
+/// The Ctrl+R hotkey path: a hardware reset must take a running machine all
+/// the way back to the firmware banner, like a real reset button.
+#[test]
+#[ignore]
+fn reset_reboots_to_firmware_banner() {
+    let mut runtime = Runtime::default();
+    let rom = std::fs::read("roms/cpc6128.rom").expect("roms/cpc6128.rom missing");
+    runtime.load_rom_from_bytes(&rom);
+
+    // Boot to the READY prompt and type something, so the editor has real
+    // state on screen and in RAM.
+    for _ in 0..600 {
+        runtime.run_for_cycles(IRQ_PERIOD * 6);
+    }
+    runtime.components.keyboard.press_text("a");
+    for _ in 0..50 {
+        runtime.run_for_cycles(IRQ_PERIOD * 6);
+    }
+    runtime.components.keyboard.release_text("a");
+    for _ in 0..50 {
+        runtime.run_for_cycles(IRQ_PERIOD * 6);
+    }
+    let text_before = decode_screen_text(&runtime.components.mem, &rom).join("\n");
+    assert!(
+        text_before.contains("Ready"),
+        "boot did not reach the READY prompt, screen was:\n{}",
+        text_before
+    );
+
+    // Reset, then run long enough for a full firmware boot again.
+    runtime.reset();
+    assert_eq!(runtime.components.registers.pc.get(), 0x0000);
+    for _ in 0..600 {
+        runtime.run_for_cycles(IRQ_PERIOD * 6);
+    }
+
+    let text_after = decode_screen_text(&runtime.components.mem, &rom).join("\n");
+    println!("{}", text_after);
+    assert!(
+        text_after.contains("Ready"),
+        "machine did not reboot to the READY prompt after reset, screen was:\n{}",
+        text_after
+    );
+}

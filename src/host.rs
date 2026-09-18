@@ -81,6 +81,16 @@ impl FrameMailbox {
     }
 }
 
+/// A message from the UI thread to the emulation thread.
+pub enum Input {
+    /// A guest keyboard event: the text of the key and whether it went
+    /// down. Keys intercepted by the host (everything under Ctrl) never
+    /// arrive here.
+    Key { text: String, pressed: bool },
+    /// Cold-reset the machine.
+    Reset,
+}
+
 /// A running emulation thread; dropping it signals stop and joins.
 pub struct EmuThread {
     stop: Arc<AtomicBool>,
@@ -97,14 +107,17 @@ impl Drop for EmuThread {
 }
 
 /// Spawns the thread that owns the emulated machine. Each 20ms deadline it
-/// applies queued keyboard events, runs one machine frame (audio renders in
-/// lockstep inside `run_for_cycles`), publishes the display frame to the
-/// mailbox and paces itself with a drift-correcting schedule, so host
-/// scheduling jitter never accumulates.
+/// applies queued keyboard events and commands, runs one machine frame
+/// (audio renders in lockstep inside `run_for_cycles`), publishes the
+/// display frame to the mailbox and paces itself with a drift-correcting
+/// schedule, so host scheduling jitter never accumulates. While `paused`
+/// is set the machine stops advancing but the thread keeps draining input
+/// and pacing, so a later unpause resumes cleanly.
 pub fn spawn_emu_thread(
     mut runtime: Runtime,
     mailbox: Arc<FrameMailbox>,
-    input: Receiver<(String, i32)>,
+    input: Receiver<Input>,
+    paused: Arc<AtomicBool>,
 ) -> EmuThread {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_flag = Arc::clone(&stop);
@@ -120,32 +133,39 @@ pub fn spawn_emu_thread(
                 }
                 // Apply everything queued on the input channel; a closed
                 // channel just means nobody is sending keys.
-                while let Ok((text, pressed)) = input.try_recv() {
-                    if pressed != 0 {
-                        runtime.components.keyboard.press_text(&text);
-                    } else {
-                        runtime.components.keyboard.release_text(&text);
+                while let Ok(input) = input.try_recv() {
+                    match input {
+                        Input::Key { text, pressed } => {
+                            if pressed {
+                                runtime.components.keyboard.press_text(&text);
+                            } else {
+                                runtime.components.keyboard.release_text(&text);
+                            }
+                        }
+                        Input::Reset => runtime.reset(),
                     }
                 }
 
-                // One machine frame; audio renders inside in ~5ms slices.
-                runtime.run_for_cycles(CYCLES_PER_FRAME);
+                if !paused.load(Ordering::Relaxed) {
+                    // One machine frame; audio renders inside in ~5ms slices.
+                    runtime.run_for_cycles(CYCLES_PER_FRAME);
 
-                renderer::render_into(
-                    &runtime.components.mem,
-                    &runtime.components.gate_array,
-                    &runtime.components.crtc,
-                    &mut machine_frame,
-                );
-                // The CRTC's window (R1/R6) sizes the machine frame; scale
-                // by integer factors, never below 1x: a window larger than
-                // the display footprint crops instead of dividing by zero.
-                machine_frame.scaled_into(
-                    (DISPLAY_WIDTH / machine_frame.width).max(1),
-                    (DISPLAY_HEIGHT / machine_frame.height).max(1),
-                    &mut scaled,
-                );
-                mailbox.publish(&scaled);
+                    renderer::render_into(
+                        &runtime.components.mem,
+                        &runtime.components.gate_array,
+                        &runtime.components.crtc,
+                        &mut machine_frame,
+                    );
+                    // The CRTC's window (R1/R6) sizes the machine frame; scale
+                    // by integer factors, never below 1x: a window larger than
+                    // the display footprint crops instead of dividing by zero.
+                    machine_frame.scaled_into(
+                        (DISPLAY_WIDTH / machine_frame.width).max(1),
+                        (DISPLAY_HEIGHT / machine_frame.height).max(1),
+                        &mut scaled,
+                    );
+                    mailbox.publish(&scaled);
+                }
 
                 // Pace to the next frame deadline. A long stall restarts
                 // the schedule rather than bursting catch-up frames.
@@ -190,12 +210,13 @@ fn sleep_to(deadline: Instant) {
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameMailbox, spawn_emu_thread};
+    use super::{FrameMailbox, Input, spawn_emu_thread};
     use crate::audio::audio_ring;
     use crate::runtime::Runtime;
     use crate::video::Frame;
     use std::sync::mpsc;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -226,8 +247,13 @@ mod tests {
         runtime.components.psg.sample_rate = 44_100;
 
         let mailbox = Arc::new(FrameMailbox::new(640, 400));
-        let (_tx, rx) = mpsc::channel::<(String, i32)>();
-        let _emu = spawn_emu_thread(runtime, Arc::clone(&mailbox), rx);
+        let (_tx, rx) = mpsc::channel::<Input>();
+        let _emu = spawn_emu_thread(
+            runtime,
+            Arc::clone(&mailbox),
+            rx,
+            Arc::new(AtomicBool::new(false)),
+        );
 
         // ~300ms of real time: at 50Hz the thread presents a frame roughly
         // every 20ms and owes ~13,230 audio samples. The bounds stay

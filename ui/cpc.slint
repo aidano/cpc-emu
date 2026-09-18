@@ -4,19 +4,19 @@ export component CpcWindow inherits Window {
     height: 800px;
 
     in property <image> frame;
-    callback key(string, int);
+    callback key(string, int, bool, bool, bool);
 
     FocusScope {
         width: parent.width;
         height: parent.height;
 
         key-pressed(e) => {
-            root.key(e.text, 1);
+            root.key(e.text, 1, e.modifiers.control, e.modifiers.meta, e.repeat);
             accept
         }
 
         key-released(e) => {
-            root.key(e.text, 0);
+            root.key(e.text, 0, e.modifiers.control, e.modifiers.meta, e.repeat);
             accept
         }
 

@@ -13,6 +13,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::thread;
 use std::time::Duration;
 
@@ -99,8 +100,13 @@ fn run_terminal(
     let mailbox = Arc::new(cpc_emu::host::FrameMailbox::new(640, 400));
     // Terminal mode has no keyboard input path: the sender is dropped and
     // the emulation thread just sees a closed channel.
-    let (_tx, rx) = mpsc::channel::<(String, i32)>();
-    let _emu = cpc_emu::host::spawn_emu_thread(runtime, Arc::clone(&mailbox), rx);
+    let (_tx, rx) = mpsc::channel::<cpc_emu::host::Input>();
+    let _emu = cpc_emu::host::spawn_emu_thread(
+        runtime,
+        Arc::clone(&mailbox),
+        rx,
+        Arc::new(AtomicBool::new(false)),
+    );
     let mut sink = video::terminal::TerminalSink::new(scale);
     let mut display = video::Frame::new(640, 400);
     loop {
@@ -112,20 +118,26 @@ fn run_terminal(
 }
 
 #[cfg(feature = "gui")]
-fn run_slint(runtime: Runtime, audio_out: Option<audio::AudioOutput>) -> Result<(), slint::PlatformError> {
-    video::slint_backend::run(runtime, audio_out)
+fn run_slint(
+    runtime: Runtime,
+    audio_out: Option<audio::AudioOutput>,
+    mute: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
+) -> Result<(), slint::PlatformError> {
+    video::slint_backend::run(runtime, audio_out, mute, paused)
 }
 
-/// Starts the live audio output unless muted; the PSG renders at whatever
-/// rate the device reports. A missing device logs a warning and the
-/// emulator runs silent.
-fn setup_audio(runtime: &mut Runtime, mute: bool) -> Option<audio::AudioOutput> {
-    if mute {
-        debug!("audio muted");
-        return None;
-    }
+/// Starts the live audio output stream. The stream stays open even when
+/// muted (so Ctrl+M can unmute into a live device); the callback emits
+/// silence while the mute or pause flag is set. A missing device logs a
+/// warning and the emulator runs silent.
+fn setup_audio(
+    runtime: &mut Runtime,
+    mute: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
+) -> Option<audio::AudioOutput> {
     let (producer, consumer) = audio::audio_ring();
-    match audio::start(consumer) {
+    match audio::start(consumer, Arc::clone(&mute), Arc::clone(&paused)) {
         Some((output, rate)) => {
             runtime.components.psg.sample_rate = rate;
             runtime.audio = Some(producer);
@@ -238,8 +250,16 @@ fn main() -> io::Result<()> {
     }
 
     // Live audio: the output handle must outlive the run loop, so it stays
-    // with the caller of the selected backend.
-    let audio_out = setup_audio(&mut runtime, args.mute);
+    // with the caller of the selected backend. The mute and pause flags are
+    // shared with the audio callback (silence) and, in GUI mode, the window
+    // backend (the Ctrl hotkeys flip them).
+    let mute_flag = Arc::new(AtomicBool::new(args.mute));
+    let paused_flag = Arc::new(AtomicBool::new(false));
+    let audio_out = setup_audio(
+        &mut runtime,
+        Arc::clone(&mute_flag),
+        Arc::clone(&paused_flag),
+    );
 
     match args.display.as_str() {
         "terminal" => {
@@ -252,7 +272,8 @@ fn main() -> io::Result<()> {
         }
         #[cfg(feature = "gui")]
         "slint" => {
-            run_slint(runtime, audio_out).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            run_slint(runtime, audio_out, mute_flag, paused_flag)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
         }
         _ => {
             if args.display == "slint" {
