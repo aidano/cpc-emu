@@ -1,6 +1,7 @@
 #![allow(dead_code, unused)]
 
 use cpc_emu::dsk::Dsk;
+use cpc_emu::joystick::JoyInputs;
 use cpc_emu::runtime::*;
 use cpc_emu::video;
 use cpc_emu::video::VideoSink;
@@ -54,6 +55,16 @@ struct Arguments {
     /// Disable audio output
     #[clap(long)]
     mute: bool,
+
+    /// Disable USB gamepad support (the joystick ports and the guest
+    /// keyboard mirroring)
+    #[clap(long)]
+    no_joystick: bool,
+
+    /// Keep the joystick ports but stop the gamepad from driving the guest
+    /// keyboard (cursor keys, Space, Return)
+    #[clap(long)]
+    no_joy_keys: bool,
 }
 
 /// The 664/6128 OS ROMs are (c) 1985; the 464's is (c) 1984 and that machine
@@ -95,17 +106,28 @@ fn run_terminal(
     runtime: Runtime,
     scale: video::terminal::TerminalScale,
     _audio: Option<audio::AudioOutput>,
+    joy: Option<Arc<JoyInputs>>,
+    joy_keys: bool,
 ) {
     // The emulation runs in its own thread; this loop only presents frames.
     let mailbox = Arc::new(cpc_emu::host::FrameMailbox::new(640, 400));
     // Terminal mode has no keyboard input path: the sender is dropped and
-    // the emulation thread just sees a closed channel.
+    // the emulation thread just sees a closed channel. The pad still
+    // works — the poller publishes to the shared state and the emulation
+    // thread applies the joystick ports and (when mirroring is on) the
+    // guest keyboard directly.
     let (_tx, rx) = mpsc::channel::<cpc_emu::host::Input>();
+    #[cfg(feature = "joystick")]
+    if let Some(joy) = joy.as_ref() {
+        cpc_emu::joystick::spawn_joy_thread(Arc::clone(joy));
+    }
     let _emu = cpc_emu::host::spawn_emu_thread(
         runtime,
         Arc::clone(&mailbox),
         rx,
         Arc::new(AtomicBool::new(false)),
+        joy,
+        joy_keys,
     );
     let mut sink = video::terminal::TerminalSink::new(scale);
     let mut display = video::Frame::new(640, 400);
@@ -123,8 +145,11 @@ fn run_slint(
     audio_out: Option<audio::AudioOutput>,
     mute: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
+    font: Option<cpc_emu::memory_browser::CpcFont>,
+    joy: Option<Arc<JoyInputs>>,
+    joy_keys: bool,
 ) -> Result<(), slint::PlatformError> {
-    video::slint_backend::run(runtime, audio_out, mute, paused)
+    video::slint_backend::run(runtime, audio_out, mute, paused, font, joy, joy_keys)
 }
 
 /// Starts the live audio output stream. The stream stays open even when
@@ -148,7 +173,9 @@ fn setup_audio(
 }
 
 fn main() -> io::Result<()> {
-    env_logger::init();
+    env_logger::Builder::from_env(env_logger::Env::default())
+        .format_timestamp_millis()
+        .init();
     let args = Arguments::parse();
 
     let mut disc: Option<Dsk> = None;
@@ -261,6 +288,15 @@ fn main() -> io::Result<()> {
         Arc::clone(&paused_flag),
     );
 
+    // USB gamepads drive the CPC's joystick ports (keyboard-matrix
+    // entries) and, unless --no-joy-keys, also mirror onto the guest
+    // keyboard for games that only read keys.
+    #[cfg(feature = "joystick")]
+    let joy: Option<Arc<JoyInputs>> =
+        if args.no_joystick { None } else { Some(Arc::new(JoyInputs::new())) };
+    #[cfg(not(feature = "joystick"))]
+    let joy: Option<Arc<JoyInputs>> = None;
+
     match args.display.as_str() {
         "terminal" => {
             let scale = video::terminal::TerminalScale::from_str(&args.terminal_scale)
@@ -268,11 +304,16 @@ fn main() -> io::Result<()> {
                     error!("Unknown terminal scale '{}', using braille", args.terminal_scale);
                     video::terminal::TerminalScale::Braille
                 });
-            run_terminal(runtime, scale, audio_out);
+            run_terminal(runtime, scale, audio_out, joy, !args.no_joy_keys);
         }
         #[cfg(feature = "gui")]
         "slint" => {
-            run_slint(runtime, audio_out, mute_flag, paused_flag)
+            // The memory browser draws with the OS ROM's own character
+            // glyphs when the main image carries the firmware's font block
+            // (16K or 32K images both do); a missing block falls back to
+            // the host font inside the browser window.
+            let font = cpc_emu::memory_browser::CpcFont::from_os_rom(&buffer);
+            run_slint(runtime, audio_out, mute_flag, paused_flag, font, joy, !args.no_joy_keys)
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
         }
         _ => {

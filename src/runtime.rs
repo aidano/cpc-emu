@@ -14,7 +14,7 @@ use crate::audio::AudioProducer;
 use crate::dsk::Dsk;
 use crate::devices::{crtc::Crtc, fdc::Fdc, keyboard::Keyboard, ppi::Ppi, psg::Psg};
 
-use log::{debug, error};
+use log::{debug, error, trace};
 
 /// The gate array raises its interrupt every 52 scanlines; one scanline is
 /// 64 characters of 4 T-cycles (256 T-cycles) on the CPC.
@@ -56,6 +56,16 @@ pub struct RuntimeComponents {
     /// so the frame-anchored crossing and the VSYNC+2 reset can never race
     /// across instruction-boundary quantization.
     pub lines_since_irq: u32,
+    /// Diagnostics, drained by the host once per second: acknowledged
+    /// interrupts, and for IM 2 the handler address the vector table
+    /// produced — a game taking over the interrupt regime is visible here.
+    pub interrupts_ack: u32,
+    pub last_im2_target: u16,
+    /// Frame-fly-aligned interrupt assertions (the VSYNC+2 counter reset
+    /// issuing an interrupt while the 52-line counter is below 32): the
+    /// firmware keys its keyboard scan to this event, so a rate other than
+    /// the frame rate breaks the input machinery's cadence.
+    pub frame_fly_fires: u32,
 }
 
 impl RuntimeComponents {
@@ -70,7 +80,7 @@ impl RuntimeComponents {
         let crtc = Crtc::default();
         let keyboard = Keyboard::default();
         let fdc = Fdc::default();
-        RuntimeComponents { mem, registers, address_bus, data_bus, gate_array, ppi, psg, crtc, keyboard, fdc, cycles_since_irq: 0, lines_since_irq: 0 }
+        RuntimeComponents { mem, registers, address_bus, data_bus, gate_array, ppi, psg, crtc, keyboard, fdc, cycles_since_irq: 0, lines_since_irq: 0, interrupts_ack: 0, last_im2_target: 0, frame_fly_fires: 0 }
     }
 
     /// Routes an OUT to the right device. Decode follows the hardware: chips
@@ -94,7 +104,7 @@ impl RuntimeComponents {
             }
         }        // RAM configuration: ports 0x0000-0x7FFF with data bits 7-6 = 11.
         if high & 0x80 == 0 && value & 0xC0 == 0xC0 {
-            debug!("RAM config -> {:02X}", value);
+            trace!("RAM config -> {:02X}", value);
             self.mem.set_ram_config(value);
         }
         // CRTC: register select (0xBCxx) and data write (0xBDxx).
@@ -149,7 +159,15 @@ impl RuntimeComponents {
         if high & 0x08 == 0 {
             let vsync = self.crtc.vsync_active;
             let row = self.keyboard.row(self.ppi.keyboard_line & 0x0F);
-            return self.ppi.read(high & 3, Some(row), vsync, &self.psg);
+            let value = self.ppi.read(high & 3, Some(row), vsync, &self.psg);
+            // Attribute matrix reads to the reading code: the firmware's
+            // scan routine and a game's own polling loop are told apart by
+            // their PCs in the once-per-second diagnostics.
+            if self.ppi.last_read_was_matrix {
+                let pc = self.registers.pc.get();
+                *self.ppi.keyboard_read_pcs.entry(pc).or_insert(0) += 1;
+            }
+            return value;
         }
         0xFF
     }
@@ -241,6 +259,9 @@ impl Runtime {
         self.components.fdc.reset();
         self.components.cycles_since_irq = 0;
         self.components.lines_since_irq = 0;
+        self.components.interrupts_ack = 0;
+        self.components.last_im2_target = 0;
+        self.components.frame_fly_fires = 0;
         self.audio_owed_x = 0;
     }
 
@@ -265,10 +286,11 @@ impl Runtime {
         let r = self.components.registers.r.get();
         self.components.registers.r.set((r & 0x80) | ((r.wrapping_add(1)) & 0x7F));
 
-        // The instruction trace is only materialised when debug logging is
-        // on: building it for every fetch costs the loop several percent
-        // even with the log level off.
-        if log::log_enabled!(log::Level::Debug) {
+        // The instruction trace is only materialised when trace logging is
+        // on: building it for every fetch would emit millions of lines a
+        // second and throttle the machine, so `RUST_LOG=debug` stays quiet
+        // and fast; `RUST_LOG=cpc_emu::runtime=trace` opts into the flood.
+        if log::log_enabled!(log::Level::Trace) {
             let machine_code: String = (pc_before..pc_after)
                 .map(|addr| format!("{:02X}", self.components.mem.read(addr)))
                 .collect::<Vec<String>>()
@@ -279,7 +301,7 @@ impl Runtime {
             let de = self.components.registers.get16(crate::memory::R16::DE);
             let iy = self.components.registers.get16(crate::memory::R16::IY);
             let af = self.components.registers.get16(crate::memory::R16::AF);
-            debug!("{:0>8X} {:0>4X}\t{: <14}\t{: <20}\t({} cycles)\tAF:{:04X} HL:{:04X} DE:{:04X} BC:{:04X} IY:{:04X} SP:{:04X}", self.components.mem.diagnostics_step, pc_before, machine_code, assembly, cycles, af, hl, de, bc, iy, self.components.registers.sp.get());
+            trace!("{:0>8X} {:0>4X}\t{: <14}\t{: <20}\t({} cycles)\tAF:{:04X} HL:{:04X} DE:{:04X} BC:{:04X} IY:{:04X} SP:{:04X}", self.components.mem.diagnostics_step, pc_before, machine_code, assembly, cycles, af, hl, de, bc, iy, self.components.registers.sp.get());
         }
         cycles
     }
@@ -438,6 +460,7 @@ impl Runtime {
                     self.components.cycles_since_irq = 0;
                     if below_32 {
                         self.components.gate_array.irq_pending = true;
+                        self.components.frame_fly_fires += 1;
                     }
                 }
             }
@@ -465,18 +488,22 @@ impl Runtime {
         self.components.cycles_since_irq %= 32 * LINE_T;
         let return_address = registers.pc.get();
         registers.sp.push(&mut self.components.mem, return_address);
+        self.components.interrupts_ack += 1;
         match registers.interrupt_mode {
             0 => {
                 // Data bus acknowledges with 0xFF on a CPC, which decodes as RST 38h.
                 registers.pc.set(0x0038);
+                self.components.last_im2_target = 0;
             }
             2 => {
                 let vector = ((registers.i.get() as u16) << 8) | 0xFF;
                 let target = self.components.mem.read16(vector);
                 registers.pc.set(target);
+                self.components.last_im2_target = target;
             }
             _ => {
                 registers.pc.set(0x0038);
+                self.components.last_im2_target = 0;
             }
         }
         registers.iff1 = false;
@@ -797,6 +824,58 @@ mod tests {
 
         rt.run_for_cycles(IRQ_PERIOD * 2);
         assert_eq!(rt.components.registers.a.get(), 0);
+    }
+
+    #[test]
+    fn test_keyboard_reads_attributed_to_the_reading_pc() {
+        let mut rt = runtime();
+        // The firmware's scan protocol through the real port addresses:
+        // latch PSG register 14, then port A input with the PSG control
+        // lines in read mode and matrix line 7 in port C.
+        rt.components.port_out(0xF700, 0x80); // all ports output
+        rt.components.port_out(0xF600, 0xC0); // PSG latch-address mode
+        rt.components.port_out(0xF400, 14);   // select PSG register 14
+        rt.components.port_out(0xF700, 0x92); // port A input, port C output
+        rt.components.port_out(0xF600, 0x47); // PSG read mode, matrix line 7
+        rt.components.registers.pc.set(0x1234);
+        let _ = rt.components.port_in(0xF400);
+        assert_eq!(rt.components.ppi.keyboard_reads[7], 1);
+        assert_eq!(
+            rt.components.ppi.keyboard_read_pcs.get(&0x1234),
+            Some(&1),
+            "the matrix read is attributed to the executing PC"
+        );
+    }
+
+    #[test]
+    fn test_interrupt_diagnostics_counters() {
+        let mut rt = runtime();
+        // IM2; EI; JR -2 self-loop; the vector table at 0x40FF points to
+        // the handler at 0x1234: INC A; RET.
+        rt.components.mem.write(0x0000, 0xED);
+        rt.components.mem.write(0x0001, 0x5E);
+        rt.components.mem.write(0x0002, 0xFB);
+        rt.components.mem.write(0x0003, 0x18);
+        rt.components.mem.write(0x0004, 0xFE);
+        rt.components.mem.write16(0x40FF, 0x1234);
+        rt.components.mem.write(0x1234, 0x3C);
+        rt.components.mem.write(0x1235, 0xC9);
+        rt.components.registers.i.set(0x40);
+        rt.components.registers.pc.set(0);
+        rt.step(); // IM2
+        rt.step(); // EI
+        rt.step(); // JR
+
+        rt.run_for_cycles(IRQ_PERIOD * 2);
+
+        assert!(rt.components.interrupts_ack >= 1, "acknowledged interrupts must count");
+        assert_eq!(rt.components.last_im2_target, 0x1234);
+        assert_eq!(rt.components.registers.interrupt_mode, 2);
+        // A reset clears the diagnostics with everything else.
+        rt.reset();
+        assert_eq!(rt.components.interrupts_ack, 0);
+        assert_eq!(rt.components.last_im2_target, 0);
+        assert_eq!(rt.components.frame_fly_fires, 0);
     }
 
     #[test]

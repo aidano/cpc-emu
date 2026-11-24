@@ -3,10 +3,14 @@ export component CpcWindow inherits Window {
     width: 1280px;
     height: 800px;
 
+    // Without this, Slint delivers key events to no item at all (nothing
+    // has focus), so neither the guest nor the host hotkeys see a key.
+    forward-focus: keys;
+
     in property <image> frame;
     callback key(string, int, bool, bool, bool);
 
-    FocusScope {
+    keys := FocusScope {
         width: parent.width;
         height: parent.height;
 
@@ -25,6 +29,103 @@ export component CpcWindow inherits Window {
             width: parent.width;
             height: parent.height;
             image-rendering: pixelated;
+        }
+    }
+}
+
+// Debug memory browser: its own window, shown while the machine is paused
+// (Ctrl+P). Each row is an address, the eight bytes visible from it, and
+// their readable text (blank where a byte has none). Space pages forward
+// through the address space; Ctrl-modified keys stay host commands here
+// too (Ctrl+P to resume, Ctrl+Q to quit, ...) and are reported via
+// `command` instead of reaching the guest.
+//
+// With the OS ROM's character block available, the emulator draws the page
+// into `page-image` using the firmware's own glyphs and sets `has-page-image`;
+// the text rows below are then the no-ROM fallback.
+
+export struct MemoryRow {
+    address: string,
+    b0: string,
+    b1: string,
+    b2: string,
+    b3: string,
+    b4: string,
+    b5: string,
+    b6: string,
+    b7: string,
+    ascii: string,
+}
+
+export component MemoryBrowser inherits Window {
+    title: "Memory Browser";
+    width: 460px;
+    height: 400px;
+    background: #16181d;
+
+    // Same focus requirement as the main window: without it, Space and the
+    // host commands typed here are dropped.
+    forward-focus: scope;
+
+    in property <[MemoryRow]> rows;
+    in property <image> page-image;
+    in property <bool> has-page-image;
+    callback page-next();
+    callback command(string, bool, bool, bool);
+
+    scope := FocusScope {
+        width: parent.width;
+        height: parent.height;
+
+        key-pressed(e) => {
+            if (e.modifiers.control || e.modifiers.meta) {
+                root.command(e.text, e.modifiers.control, e.modifiers.meta, e.repeat);
+            } else if (e.text == " ") {
+                root.page-next();
+            }
+            accept
+        }
+
+        if root.has-page-image : Image {
+            x: 8px;
+            y: 8px;
+            width: parent.width - 16px;
+            height: parent.height - 16px;
+            source: root.page-image;
+            image-rendering: pixelated;
+        }
+
+        if !root.has-page-image : VerticalLayout {
+            padding: 8px;
+            spacing: 4px;
+
+            HorizontalLayout {
+                spacing: 4px;
+                Text { text: "Address"; width: 64px; color: #6a737d; font-family: "monospace"; }
+                Text { text: "+0"; width: 26px; color: #6a737d; font-family: "monospace"; }
+                Text { text: "+1"; width: 26px; color: #6a737d; font-family: "monospace"; }
+                Text { text: "+2"; width: 26px; color: #6a737d; font-family: "monospace"; }
+                Text { text: "+3"; width: 26px; color: #6a737d; font-family: "monospace"; }
+                Text { text: "+4"; width: 26px; color: #6a737d; font-family: "monospace"; }
+                Text { text: "+5"; width: 26px; color: #6a737d; font-family: "monospace"; }
+                Text { text: "+6"; width: 26px; color: #6a737d; font-family: "monospace"; }
+                Text { text: "+7"; width: 26px; color: #6a737d; font-family: "monospace"; }
+                Text { text: "ASCII"; width: 80px; color: #6a737d; font-family: "monospace"; }
+            }
+
+            for row in rows: HorizontalLayout {
+                spacing: 4px;
+                Text { text: row.address; width: 64px; color: #79c0ff; font-family: "monospace"; }
+                Text { text: row.b0; width: 26px; color: #e6edf3; font-family: "monospace"; }
+                Text { text: row.b1; width: 26px; color: #e6edf3; font-family: "monospace"; }
+                Text { text: row.b2; width: 26px; color: #e6edf3; font-family: "monospace"; }
+                Text { text: row.b3; width: 26px; color: #e6edf3; font-family: "monospace"; }
+                Text { text: row.b4; width: 26px; color: #e6edf3; font-family: "monospace"; }
+                Text { text: row.b5; width: 26px; color: #e6edf3; font-family: "monospace"; }
+                Text { text: row.b6; width: 26px; color: #e6edf3; font-family: "monospace"; }
+                Text { text: row.b7; width: 26px; color: #e6edf3; font-family: "monospace"; }
+                Text { text: row.ascii; width: 80px; color: #7ee787; font-family: "monospace"; }
+            }
         }
     }
 }

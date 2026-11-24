@@ -8,4 +8,6 @@ pub mod audio;
 pub mod devices;
 pub mod dsk;
 pub mod host;
+pub mod joystick;
 pub mod utils;
+pub mod memory_browser;

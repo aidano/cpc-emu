@@ -27,6 +27,9 @@ Options:
 - `--display slint` (window, default) or `--display terminal`
   (with `--terminal-scale full|half|braille`).
 - `--mute` — disable audio output.
+- `--no-joystick` — disable USB gamepad support entirely.
+- `--no-joy-keys` — keep the joystick ports but stop the gamepad from
+  driving the guest keyboard.
 
 ### Sound
 
@@ -47,6 +50,56 @@ stream through a lock-free ring — so window/UI work can never stall sound
 production. If the host genuinely can't keep 50Hz the emulated machine —
 and with it music tempo — slows coherently; build with `--release`.
 `RUST_LOG=debug` metering shows the render, machine and stream rates.
+
+### Joysticks
+
+USB gamepads drive the CPC's joystick ports through the `joystick` feature
+(on by default), polled cross-platform with `gilrs`: XInput/DirectInput on
+Windows, evdev/libudev on Linux, IOKit HID on macOS. The
+CPC wires its joystick ports into the keyboard matrix — joystick 0 owns
+matrix line 9, joystick 1 shares line 6 with keys — so the gamepad state is
+applied to the same matrix the PSG scan reads, and games see it like real
+hardware. With no gamepad the emulator logs the detection result and runs
+normally; on Linux the `libudev` system library must be present.
+
+Mapping (per pad): D-pad or left stick are the directions, the bottom face
+button (A/✕) is fire 1, the right face button (B/○) is fire 2, and Start is
+the CPC's Return. The first two pads connected map to players 1 and 2; a
+disconnect re-slots the rest. With keyboard mirroring on (default), the
+directions also press the guest's cursor keys, the face buttons press
+Space, and Start presses Return — so keyboard-only games work from the pad
+too; `--no-joy-keys` restricts the pad to the joystick ports alone.
+
+Mirroring is applied from the polled pad state on every matrix read
+(alongside the joystick ports), so it cannot leave a stuck key behind,
+and a reset re-applies it within one frame. The terminal display accepts
+pad input the same way.
+
+### Logging
+
+`RUST_LOG=debug` is safe to run games with: the emulator's debug output is
+event-driven — guest key events (`key '\n' pressed=true`), joystick mask
+changes (`player 1 mask 00 -> 21 [fire1]`), gamepad connect/disconnect and
+once-per-second audio metering — enough to pinpoint a pad whose idle state
+drifts into held input or a host key whose event text never maps. Scope it
+to the emulator's own input modules to silence third-party noise:
+
+```
+RUST_LOG=cpc_emu::joystick=debug,cpc_emu::host=debug
+```
+
+A once-per-second `keyboard reads/s` line shows what the guest polled from
+the matrix — which lines, and any output-mode reg 14 reads — so a game whose
+input code stops polling (or never polls line 7 while you press `3`) is
+visible directly, independent of whether keys are pressed.
+
+The per-instruction Z80 trace (machine code, assembly, registers — millions
+of lines a second, throttling the machine) lives at `trace` level and is
+opt-in only:
+
+```
+RUST_LOG=cpc_emu::runtime=trace
+```
 
 ## Tests
 

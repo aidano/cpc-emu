@@ -1,7 +1,7 @@
 // 8255 PPI: glues the CPU to the PSG (ports A/C) and system status (port B).
 // Semantics follow the 8255 datasheet modes and the standard CPC wiring.
 
-use crate::devices::psg::{Psg, PSG_REG_READ};
+use crate::devices::psg::{Psg, PSG_PORT_A, PSG_REG_READ};
 
 pub const PPI_PORT_A: u8 = 0;
 pub const PPI_PORT_B: u8 = 1;
@@ -23,6 +23,22 @@ pub struct Ppi {
     pub keyboard_line: u8,
     /// Tape motor control bit (stored; no tape is emulated).
     pub tape_motor: bool,
+    /// Diagnostics, drained by the host once per second: matrix reads per
+    /// selected line (whether — and which lines — the guest polls the
+    /// keyboard), reg 14 reads made while PSG reg 7 bit 6 drives port A as
+    /// an output (which gates the matrix out of the read), and reg 14 reads
+    /// with the PSG control lines NOT in read mode — the port floats high,
+    /// so a scanner that reads there always sees no keys.
+    pub keyboard_reads: [u32; 16],
+    pub reg14_output_reads: u32,
+    pub reg14_stale_reads: u32,
+    /// Set when the last read counted as a keyboard matrix read; the
+    /// caller attributes the executing PC into `keyboard_read_pcs`.
+    pub last_read_was_matrix: bool,
+    /// Diagnostics: the PCs that performed matrix reads since the last
+    /// drain — the firmware's scan routine and a game's own polling loop
+    /// are distinguishable by their addresses.
+    pub keyboard_read_pcs: std::collections::HashMap<u16, u32>,
 }
 
 impl Ppi {
@@ -34,6 +50,11 @@ impl Ppi {
             port_c: 0,
             keyboard_line: 0,
             tape_motor: false,
+            keyboard_reads: [0; 16],
+            reg14_output_reads: 0,
+            reg14_stale_reads: 0,
+            last_read_was_matrix: false,
+            keyboard_read_pcs: std::collections::HashMap::new(),
         }
     }
 
@@ -96,6 +117,7 @@ impl Ppi {
     /// matrix row for the currently selected line; `vsync` is the CRTC VSYNC
     /// status.
     pub fn read(&mut self, port: u8, keyboard_row: Option<u8>, vsync: bool, psg: &Psg) -> u8 {
+        self.last_read_was_matrix = false;
         match port {
             PPI_PORT_A => {
                 if self.control & 0x10 != 0 {
@@ -103,8 +125,19 @@ impl Ppi {
                     // while the PSG control lines are in read mode; otherwise
                     // the port floats high (no keys pressed on the matrix).
                     if psg.control & 0xC0 == PSG_REG_READ {
+                        if psg.reg_select as usize == PSG_PORT_A {
+                            if psg.registers[7] & 0x40 == 0 {
+                                self.keyboard_reads[(self.keyboard_line & 0x0F) as usize] += 1;
+                                self.last_read_was_matrix = true;
+                            } else {
+                                self.reg14_output_reads += 1;
+                            }
+                        }
                         psg.read_data(keyboard_row)
                     } else {
+                        if psg.reg_select as usize == PSG_PORT_A {
+                            self.reg14_stale_reads += 1;
+                        }
                         0xFF
                     }
                 } else {
@@ -218,6 +251,47 @@ mod tests {
         // Keyboard row 0xFB passes through (reg 7 = 0 -> input mode)
         let value = ppi.read(0, Some(0xFB), false, &psg);
         assert_eq!(value, 0xFB);
+    }
+
+    #[test]
+    fn test_keyboard_read_diagnostics() {
+        let mut ppi = Ppi::default();
+        let mut psg = Psg::default();
+        // The firmware's keyboard-read protocol: latch register 14 with
+        // port A as output, then switch port A to input and put the PSG
+        // control lines into read mode with the matrix line in port C.
+        ppi.write(3, 0x80, &mut psg); // all ports output
+        ppi.write(2, 0xC0, &mut psg); // PSG latch-address mode
+        ppi.write(0, 14, &mut psg);   // select register 14
+        ppi.write(3, 0x92, &mut psg); // port A input, port C output
+        ppi.write(2, 0x47, &mut psg); // PSG read mode, matrix line 7
+        let _ = ppi.read(0, Some(0xFF), false, &psg);
+        assert_eq!(ppi.keyboard_reads[7], 1, "the line-7 matrix read is counted");
+        assert!(ppi.last_read_was_matrix, "matrix reads flag the caller");
+        assert_eq!(ppi.keyboard_reads.iter().sum::<u32>(), 1);
+        // A reg 14 read with PSG reg 7 bit 6 set (port A driven as an
+        // output) gates the matrix out of the read and counts separately.
+        psg.registers[7] = 0x40;
+        let _ = ppi.read(0, Some(0xFF), false, &psg);
+        assert_eq!(ppi.reg14_output_reads, 1);
+        assert_eq!(ppi.keyboard_reads[7], 1, "no matrix read counted then");
+    }
+
+    #[test]
+    fn test_reg14_stale_reads_counted() {
+        let mut ppi = Ppi::default();
+        let mut psg = Psg::default();
+        // Reg 14 selected, but the PSG control lines never entered read
+        // mode: the read floats high, and a scanner stuck here would see
+        // no keys forever — worth its own diagnostic counter.
+        ppi.write(3, 0x80, &mut psg); // all ports output
+        ppi.write(2, 0xC0, &mut psg); // PSG latch-address mode
+        ppi.write(0, 14, &mut psg);   // select register 14
+        ppi.write(3, 0x92, &mut psg); // port A input, port C output
+        // Port C left in latch-address mode (0xC0): not read mode.
+        let _ = ppi.read(0, Some(0xFF), false, &psg);
+        assert_eq!(ppi.reg14_stale_reads, 1);
+        assert_eq!(ppi.keyboard_reads.iter().sum::<u32>(), 0);
     }
 
     #[test]

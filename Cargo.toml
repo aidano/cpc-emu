@@ -14,11 +14,18 @@ slint = { version = "1", optional = true }
 # access to the underlying winit window (WinitWindowAccessor).
 i-slint-backend-winit = { version = "1.7", default-features = false, optional = true }
 cpal = { version = "0.15", optional = true }
+# Gamepad polling: XInput/DirectInput on Windows, evdev+libudev on Linux,
+# IOKit HID on macOS (all OS-bundled; Linux needs libudev).
+gilrs = { version = "0.11", optional = true }
 
 [features]
-default = ["gui", "audio"]
+default = ["gui", "audio", "joystick"]
 gui = ["dep:slint", "dep:i-slint-backend-winit"]
 audio = ["dep:cpal"]
+joystick = ["dep:gilrs"]
 
 [build-dependencies]
 slint-build = "1"
+
+[dev-dependencies]
+i-slint-backend-testing = "1.18.0"
